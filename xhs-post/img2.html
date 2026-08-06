@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; font-family:"PingFang SC","Microsoft YaHei",sans-serif; }
+  body { width:1080px; height:1440px; background:#0A0A0A; color:#fff; overflow:hidden;
+         display:flex; flex-direction:column; align-items:center; padding:90px 60px 70px;
+         background-image:radial-gradient(ellipse 80% 45% at 50% 0%, rgba(255,107,53,.10), transparent 65%); }
+  .tag { font-size:30px; color:#FF6B35; letter-spacing:8px; margin-bottom:26px; font-weight:600; }
+  h1 { font-size:68px; font-weight:800; letter-spacing:2px; margin-bottom:18px; }
+  h1 em { font-style:normal; color:#00D9FF; }
+  .sub { font-size:34px; color:rgba(255,255,255,.55); margin-bottom:64px; }
+
+  .screen { width:960px; border-radius:28px; overflow:hidden; position:relative;
+            border:1px solid rgba(255,255,255,.09);
+            box-shadow:0 40px 100px rgba(0,0,0,.8), 0 0 80px rgba(255,107,53,.10);
+            height:600px;
+            background:linear-gradient(135deg,#f7b733 0%,#fc4a1a 55%,#8e2de2 130%); }
+  .screen::before { content:""; position:absolute; inset:0; backdrop-filter:blur(60px);
+            background:linear-gradient(180deg, rgba(0,0,0,.55), rgba(0,0,0,.95)); }
+  .drive { position:relative; height:100%; display:flex; flex-direction:column;
+           align-items:center; justify-content:space-between; padding:44px 60px 40px; }
+  .exit { position:absolute; top:26px; left:26px; width:56px; height:56px; border-radius:50%;
+          background:rgba(255,255,255,.10); display:flex; align-items:center; justify-content:center; }
+  .exit svg { width:28px; height:28px; fill:#fff; }
+  .cover { width:200px; height:200px; border-radius:22px; margin-top:6px;
+           background:linear-gradient(135deg,#f7b733 0%,#fc4a1a 55%,#8e2de2 130%);
+           box-shadow:0 20px 50px rgba(0,0,0,.7); display:flex; align-items:flex-end; padding:16px; }
+  .cover span { font-size:24px; font-weight:700; color:rgba(255,255,255,.92); text-shadow:0 2px 8px rgba(0,0,0,.5); }
+  .meta { text-align:center; }
+  .song { font-size:44px; font-weight:800; }
+  .artist { font-size:26px; color:rgba(255,255,255,.55); margin-top:8px; }
+  .ctrl { width:100%; display:flex; align-items:center; justify-content:space-evenly; }
+  .cbtn { width:96px; height:96px; border-radius:50%; display:flex; align-items:center; justify-content:center; }
+  .cbtn svg { width:60px; height:60px; fill:#fff; }
+  .cbtn.play { width:130px; height:130px; background:#00D9FF; box-shadow:0 12px 40px rgba(0,217,255,.35); }
+  .cbtn.play svg { width:76px; height:76px; fill:#000; }
+
+  .speed { display:flex; align-items:center; gap:18px; margin-top:56px;
+           background:#121212; border:1px solid rgba(255,255,255,.10); border-radius:999px; padding:20px 44px; }
+  .speed .num { font-size:44px; font-weight:800; color:#00D9FF; }
+  .speed .txt { font-size:26px; color:rgba(255,255,255,.7); }
+</style>
+</head>
+<body>
+  <div class="tag">D R I V E &nbsp; M O D E</div>
+  <h1>车速一快，自动变<em>傻瓜模式</em></h1>
+  <div class="sub">GPS 检测到在开车，界面自动切成三个超大按钮</div>
+
+  <div class="screen">
+    <div class="drive">
+      <div class="exit"><svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></div>
+      <div class="cover"><span>晴天</span></div>
+      <div class="meta">
+        <div class="song">晴天</div>
+        <div class="artist">周杰伦</div>
+      </div>
+      <div class="ctrl">
+        <div class="cbtn"><svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg></div>
+        <div class="cbtn play"><svg viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg></div>
+        <div class="cbtn"><svg viewBox="0 0 24 24"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="speed">
+    <div class="num">42 km/h</div>
+    <div class="txt">行驶中 · 大按钮盲按，眼睛不用离开路面</div>
+  </div>
+</body>
+</html>

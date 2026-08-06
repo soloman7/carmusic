@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 深色车载风 - 夜间驾驶优化 -->
+    <color name="car_background">#FF0A0A0A</color>
+    <color name="car_surface">#FF121212</color>
+    <color name="car_surface_variant">#FF1E1E1E</color>
+    <color name="car_primary">#FF00D9FF</color>
+    <color name="car_primary_variant">#FF00A8CC</color>
+    <color name="car_secondary">#FFFF6B35</color>
+    <color name="car_text_primary">#FFFFFFFF</color>
+    <color name="car_text_secondary">#B3FFFFFF</color>
+    <color name="car_text_tertiary">#66FFFFFF</color>
+    <color name="car_error">#FFCF6679</color>
+    <color name="ic_launcher_background">#FF0A0A0A</color>
+</resources>

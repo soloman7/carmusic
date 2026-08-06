@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; font-family:"PingFang SC","Microsoft YaHei",sans-serif; }
+  body { width:1080px; height:1440px; background:#0A0A0A; color:#fff; overflow:hidden;
+         display:flex; flex-direction:column; align-items:center; padding:90px 60px 70px;
+         background-image:radial-gradient(ellipse 80% 45% at 50% 0%, rgba(0,217,255,.10), transparent 65%); }
+  .tag { font-size:30px; color:#00D9FF; letter-spacing:8px; margin-bottom:26px; font-weight:600; }
+  h1 { font-size:88px; font-weight:800; letter-spacing:2px; margin-bottom:18px; }
+  h1 em { font-style:normal; color:#00D9FF; }
+  .sub { font-size:34px; color:rgba(255,255,255,.55); margin-bottom:80px; }
+
+  /* 车机屏幕框 */
+  .screen { width:960px; border-radius:28px; background:#121212; overflow:hidden;
+            border:1px solid rgba(255,255,255,.09);
+            box-shadow:0 40px 100px rgba(0,0,0,.8), 0 0 80px rgba(0,217,255,.12);
+            display:flex; height:620px; }
+  /* 左栏 */
+  .left { flex:1; padding:36px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px;
+          background:linear-gradient(180deg, rgba(0,217,255,.05), transparent); }
+  .cover { width:190px; height:190px; border-radius:18px;
+           background:linear-gradient(135deg,#f7b733 0%,#fc4a1a 55%,#8e2de2 130%);
+           box-shadow:0 16px 40px rgba(0,0,0,.6); display:flex; align-items:flex-end; padding:14px; }
+  .cover span { font-size:22px; font-weight:700; color:rgba(255,255,255,.92); text-shadow:0 2px 8px rgba(0,0,0,.5); }
+  .song { font-size:30px; font-weight:700; }
+  .artist { font-size:22px; color:rgba(255,255,255,.5); margin-top:-10px; }
+  .progress { width:100%; height:6px; border-radius:3px; background:rgba(255,255,255,.14); margin-top:6px; }
+  .progress i { display:block; width:38%; height:100%; border-radius:3px; background:#00D9FF; }
+  .times { width:100%; display:flex; justify-content:space-between; font-size:16px; color:rgba(255,255,255,.4); margin-top:-12px; }
+  .ctrl { display:flex; align-items:center; gap:34px; margin-top:4px; }
+  .cbtn { width:52px; height:52px; border-radius:50%; display:flex; align-items:center; justify-content:center; }
+  .cbtn svg { width:30px; height:30px; fill:#fff; }
+  .cbtn.play { width:72px; height:72px; background:#00D9FF; }
+  .cbtn.play svg { width:40px; height:40px; fill:#000; }
+  /* 右栏歌词 */
+  .right { flex:1; padding:30px 36px; display:flex; flex-direction:column; }
+  .tabs { display:flex; background:#1E1E1E; border-radius:22px; padding:4px; height:44px; margin-bottom:22px; }
+  .tabs div { flex:1; display:flex; align-items:center; justify-content:center; font-size:20px; border-radius:18px; color:rgba(255,255,255,.5); }
+  .tabs .on { background:#00D9FF; color:#000; font-weight:700; }
+  .lyrics { flex:1; display:flex; flex-direction:column; justify-content:center; gap:20px; font-size:21px;
+            color:rgba(255,255,255,.38); text-align:center; }
+  .lyrics .now { color:#00D9FF; font-size:26px; font-weight:700; }
+  .badges { display:flex; gap:14px; margin-top:72px; }
+  .badge { font-size:24px; color:rgba(255,255,255,.75); border:1px solid rgba(255,255,255,.18);
+           border-radius:999px; padding:12px 26px; }
+  .badge b { color:#00D9FF; font-weight:700; }
+</style>
+</head>
+<body>
+  <div class="tag">C A R M U S I C</div>
+  <h1>五个平台 <em>一起搜</em></h1>
+  <div class="sub">这家没版权？自动换下一家，歌基本是全的</div>
+
+  <div class="screen">
+    <div class="left">
+      <div class="cover"><span>晴天</span></div>
+      <div class="song">晴天</div>
+      <div class="artist">周杰伦</div>
+      <div class="progress"><i></i></div>
+      <div class="times"><span>1:42</span><span>4:29</span></div>
+      <div class="ctrl">
+        <div class="cbtn"><svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg></div>
+        <div class="cbtn play"><svg viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg></div>
+        <div class="cbtn"><svg viewBox="0 0 24 24"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg></div>
+      </div>
+    </div>
+    <div class="right">
+      <div class="tabs"><div>歌单</div><div class="on">歌词</div></div>
+      <div class="lyrics">
+        <div>故事的小黄花</div>
+        <div>从出生那年就飘着</div>
+        <div class="now">童年的荡秋千</div>
+        <div>随记忆一直晃到现在</div>
+        <div>Re So So Si Do Si La</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="badges">
+    <div class="badge"><b>网易</b>·QQ·酷狗·酷我·<b>咪咕</b></div>
+    <div class="badge">播放失败 <b>自动换源</b></div>
+  </div>
+</body>
+</html>

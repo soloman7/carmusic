@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <!-- 各平台 API 已全部 https；以下仅为播放流/封面 CDN 保留明文（代码内无其他 http:// 请求） -->
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- 咪咕：播放/封面 CDN 可能返回 http（app.c.nf.migu.cn 等子域均已被本条覆盖，不再单列） -->
+        <domain includeSubdomains="true">migu.cn</domain>
+        <!-- 酷我：antiserver 返回的流地址是 http（sycdn 等 CDN 子域已被本条覆盖） -->
+        <domain includeSubdomains="true">kuwo.cn</domain>
+        <!-- 网易云流 CDN（outer/url 302 到 m701.music.126.net 等）为 http -->
+        <domain includeSubdomains="true">126.net</domain>
+        <!-- 酷狗流 CDN：getSongInfo 返回的播放 url 为 http（API 已改 https，仅流地址仍明文） -->
+        <domain includeSubdomains="true">kugou.com</domain>
+    </domain-config>
+</network-security-config>

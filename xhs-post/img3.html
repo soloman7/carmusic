@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; font-family:"PingFang SC","Microsoft YaHei",sans-serif; }
+  body { width:1080px; height:1440px; background:#0A0A0A; color:#fff; overflow:hidden;
+         display:flex; flex-direction:column; align-items:center; padding:90px 60px 70px;
+         background-image:radial-gradient(ellipse 80% 45% at 50% 0%, rgba(0,217,255,.10), transparent 65%); }
+  .tag { font-size:30px; color:#00D9FF; letter-spacing:8px; margin-bottom:26px; font-weight:600; }
+  h1 { font-size:80px; font-weight:800; letter-spacing:2px; margin-bottom:18px; }
+  h1 em { font-style:normal; color:#FF6B35; }
+  .sub { font-size:34px; color:rgba(255,255,255,.55); margin-bottom:60px; }
+
+  .grid { width:960px; display:grid; grid-template-columns:1fr 1fr; gap:24px; }
+  .card { background:#121212; border:1px solid rgba(255,255,255,.08); border-radius:24px;
+          padding:38px 34px; min-height:218px; display:flex; flex-direction:column; gap:14px; }
+  .card .ico { font-size:46px; }
+  .card .t { font-size:32px; font-weight:700; }
+  .card .d { font-size:23px; color:rgba(255,255,255,.5); line-height:1.5; }
+  .card .t em { font-style:normal; color:#00D9FF; }
+
+  .footer { margin-top:52px; display:flex; align-items:center; gap:22px; }
+  .ver { font-size:26px; color:rgba(255,255,255,.45); }
+  .ver b { color:#FF6B35; font-size:30px; }
+</style>
+</head>
+<body>
+  <div class="tag">D E T A I L S</div>
+  <h1>为开车做的 <em>细节</em></h1>
+  <div class="sub">车机上用的东西，安全和顺手最重要</div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="ico">🎮</div>
+      <div class="t">方向盘<em>切歌</em></div>
+      <div class="d">按键直接接管，手不离开方向盘，眼睛不离开路面</div>
+    </div>
+    <div class="card">
+      <div class="ico">📍</div>
+      <div class="t">GPS <em>驾驶检测</em></div>
+      <div class="d">车速超过 5km/h 自动进驾驶模式，停车自动退回</div>
+    </div>
+    <div class="card">
+      <div class="ico">🔇</div>
+      <div class="t">导航说话 <em>自动变小声</em></div>
+      <div class="d">导航播报时音乐自动降低音量，互不打架</div>
+    </div>
+    <div class="card">
+      <div class="ico">🌙</div>
+      <div class="t">熄屏<em>后台播放</em></div>
+      <div class="d">锁屏继续唱，深色夜间主题，晚上开车不刺眼</div>
+    </div>
+    <div class="card">
+      <div class="ico">🎤</div>
+      <div class="t">歌词<em>点句跳转</em></div>
+      <div class="d">歌词同步滚动，点哪句从哪句唱</div>
+    </div>
+    <div class="card">
+      <div class="ico">🔄</div>
+      <div class="t">链接失效 <em>自动续签</em></div>
+      <div class="d">播放链接过期自动重拉，长途不掉链子</div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <div class="ver">两周 · 迭代 <b>11</b> 个版本 · 个人学习项目 · 纯晒不分享</div>
+  </div>
+</body>
+</html>

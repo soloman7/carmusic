@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">车载音乐</string>
+    <string name="search_hint">搜索歌曲、歌手、专辑</string>
+    <string name="tab_search">搜索</string>
+    <string name="tab_favorite">收藏</string>
+    <string name="tab_history">历史</string>
+    <string name="tab_player">播放</string>
+    <string name="drive_mode">驾驶模式</string>
+    <string name="no_lyric">暂无歌词</string>
+    <string name="loading">加载中…</string>
+    <string name="error_network">网络错误，请重试</string>
+    <string name="error_no_source">所有平台都无法播放此歌曲</string>
+    <string name="favorite_added">已添加到收藏</string>
+    <string name="favorite_removed">已取消收藏</string>
+    <string name="exit_drive_mode">退出驾驶模式</string>
+</resources>
