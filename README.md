@@ -1,15 +1,18 @@
 # 车载音乐 CarMusic
 
-为 BYD 元 PLUS 车机（DiLink / Android 10+）设计的聚合音乐播放 APK。当前版本 v2.9.0。
+- **车载音乐 CarMusic**：为 BYD 元 PLUS 车机（DiLink / Android 10+）设计的聚合音乐播放 APK。当前版本 v3.3.0。
 
 ## 特性
 
 - **7 平台聚合搜索**：网易云 / QQ 音乐 / 酷狗 / 酷我 / 咪咕 / Jamendo 免费电台 / 猫耳FM
-- **歌单推荐 + 歌单广场**：推荐页聚合歌单，平台广场分页加载，一键整单播放
+- **流式聚合搜索**：单源 8s 超时，快源先上屏、慢源后补，搜索延迟不被最慢平台绑架
+- **歌单推荐 + 歌单广场**：推荐页聚合歌单（网易/QQ/咪咕/酷狗/酷我 12 榜单/Jamendo/猫耳主题集），广场支持网易/QQ/咪咕/酷狗分页加载，一键整单播放
+- **无效内容预过滤**：咪咕会员歌（showTags=vip）、猫耳付费剧集（pay_type=2）、网易灰歌、QQ VIP 在歌单加载时即剔除，只显示能播的
 - **歌词同步滚动**：LrcView 实现，支持点行 seek，歌词本地缓存
 - **深色车载 UI**：全局深色主题，夜间驾驶友好，大按钮大字体
 - **横屏双栏布局**：封面+控制在左，歌词在右
-- **驾驶模式**：GPS 测速自动进入（带防抖），极简大按钮界面，行驶中盲按
+- **驾驶模式**：GPS 测速自动进入（进入：连续 3 个样本 >5km/h；退出：连续 10 个样本 <3km/h，堵车蠕行不误退；滞回带内维持原状态），极简大按钮界面，行驶中盲按
+- **播放会话恢复**：队列 + 曲目 + 进度落盘（Room），DiLink 杀进程后点播放/方向盘按键即续播"停车前听到哪"
 - **均衡器 EQ**：基于系统 Equalizer 的频段调节与预设
 - **方向盘 / 蓝牙按键**：MediaLibrarySession 自动接管
 - **Android Auto 浏览树**：MediaLibrarySession 暴露媒体库，车机/Auto 侧可浏览
@@ -18,6 +21,8 @@
 - **URL 失效自动续签**：20 分钟-2 小时时效，过期自动重拉；备用解析源兜底
 - **收藏 + 历史**：Room 持久化
 - **崩溃自恢复**：CrashHandler 捕获未处理异常并记录
+- **自动更新**：设置页配置 version.json 地址，启动时静默检查新版本，一键下载安装（支持 SHA-256 校验、取消下载；车机无应用商店场景）
+- **每周自动清理**：启动时检测距上次清理超 7 天，自动剔除收藏/历史中的死链歌曲（连续两个清理周期探测失败才删，删除前先过网络连通性哨兵，弱网误判不删数据；清理全程避让播放）、加载失败的推荐歌单（进黑名单自动隐藏，恢复后自动放出）和 30 天前的歌词缓存；可在设置页手动触发
 
 ## 技术栈
 
@@ -59,6 +64,10 @@ app/src/main/java/com/carmusic/
 │       ├── MaoerSource.kt
 │       └── GdStudioSource.kt  # 备用解析源
 ├── lyric/LyricRepository.kt
+├── update/
+│   └── UpdateManager.kt    # 自动更新：version.json 检查 → APK 下载 → 引导安装
+├── maintenance/
+│   └── ContentCleaner.kt   # 每周清理：死链歌曲 / 无效歌单黑名单 / 过期歌词
 ├── data/                   # Room 数据库 + DataStore 设置
 │   ├── Entities.kt
 │   ├── Daos.kt
@@ -75,6 +84,20 @@ app/src/main/java/com/carmusic/
     ├── eq/                 # 均衡器对话框
     └── drive/DriveModeScreen.kt
 ```
+
+## 歌单覆盖（2026-08-24 线上实测，v3.2 扩充后）
+
+| 平台 | 推荐歌单 | 歌单广场 | 备注 |
+|---|---|---|---|
+| 网易云 | 榜单+精品+个性化 | ✅ 分页 | weapi AES+RSA |
+| QQ 音乐 | 18 硬编码榜单 | ✅ 分页 | vkey 预检剔除 VIP |
+| 咪咕 | = 广场首页 | ✅ 分页 | showTags=vip 会员歌预过滤 |
+| 酷狗 | 9 榜单 | ✅ 分页 | plist/index + special/song |
+| 酷我 | 17 榜单 | ❌ 无匿名广场 API | kbangserver ksong.s |
+| Jamendo | 周/总榜+31 主题 | = 主题精选 | 服务端偶发空返回，已加重试 |
+| 猫耳FM | 12 个关键词主题集 | ❌ 官方歌单 API 已全 404 | 搜索快照充当，pay_type=2 付费剧集过滤 |
+
+有效性回归脚本：`python scripts/test_playlist_sources.py`
 
 ## 构建
 

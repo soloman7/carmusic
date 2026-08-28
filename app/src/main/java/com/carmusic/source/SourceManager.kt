@@ -15,13 +15,18 @@ import com.carmusic.source.providers.NeteaseSource
 import com.carmusic.source.providers.QQSource
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.runningFold
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 
 /**
  * 音源聚合管理：7 平台并发搜索、播放失败自动 fallback
  */
-class SourceManager(okHttpClient: OkHttpClient, settingsRepository: com.carmusic.data.SettingsRepository) {
+class SourceManager(okHttpClient: OkHttpClient, private val settingsRepository: com.carmusic.data.SettingsRepository) {
 
     private val sources: List<MusicSource> = listOf(
         MiguSource(okHttpClient),
@@ -67,13 +72,43 @@ class SourceManager(okHttpClient: OkHttpClient, settingsRepository: com.carmusic
                     }
                 }
                 val merged = deferreds.flatMap { it.await() }
-                // 按偏好序排前再去重，保留首条（即偏好序最高的那条）
-                val sorted = merged.sortedBy {
-                    preferredOrder.indexOf(it.platform).takeIf { idx -> idx >= 0 } ?: 99
-                }
-                sorted.distinctBy { track -> "${norm(track.title)}|${firstArtist(track.artist)}" }
+                mergeSorted(merged, emptyList())
             }
         }
+
+    /**
+     * 流式聚合搜索：每个源独立 8s 超时，谁先回来谁先上屏，慢源后补——
+     * 用户感知延迟 = 最快平台的延迟，而不是像 searchAll 那样被最慢平台绑架。
+     * 收齐后把合并结果写入同一份 ApiCache（fallback 等非流式路径复用）。
+     */
+    fun searchAllStream(keyword: String, enabledPlatforms: Set<String>? = null): Flow<List<Track>> =
+        channelFlow {
+            val key = "search:$keyword:${enabledPlatforms?.sorted()?.joinToString(",")}"
+            ApiCache.peekFresh(key)?.let { send(it as List<Track>); return@channelFlow }
+            val filtered = enabledPlatforms?.let { en -> sources.filter { it.platform in en } }
+                ?: sources
+            val collected = mutableListOf<List<Track>>()
+            coroutineScope {
+                filtered.map { source ->
+                    launch {
+                        val result = withTimeoutOrNull(SOURCE_TIMEOUT_MS) {
+                            runCatching { source.search(keyword, page = 1, limit = 15) }.getOrNull()
+                        } ?: emptyList()
+                        if (result.isNotEmpty()) {
+                            synchronized(collected) { collected.add(result) }
+                            send(result)   // channelFlow 支持并发 send
+                        }
+                    }
+                }
+            }
+            ApiCache.putDirect(key, mergeSorted(collected.flatten(), emptyList()))
+        }.runningFold(initial = emptyList()) { acc, chunk -> mergeSorted(acc, chunk) }
+
+    /** 合并 + 按偏好序排序 + 标题|主歌手去重 */
+    private fun mergeSorted(acc: List<Track>, chunk: List<Track>): List<Track> =
+        (acc + chunk).sortedBy {
+            preferredOrder.indexOf(it.platform).takeIf { idx -> idx >= 0 } ?: 99
+        }.distinctBy { track -> "${norm(track.title)}|${firstArtist(track.artist)}" }
 
     /**
      * 搜索单个平台（用于过滤场景）
@@ -170,12 +205,28 @@ class SourceManager(okHttpClient: OkHttpClient, settingsRepository: com.carmusic
     fun getSource(platform: String): MusicSource? = sources.find { it.platform == platform }
 
     /**
+     * 连通性哨兵：任一稳定平台能搜到结果即视为网络可用。
+     * 清理等带破坏性的维护任务前置门槛——哨兵失败说明当前是"网络死"，
+     * 探测结果不可信，整轮放弃而不是把好歌当死链删掉。
+     */
+    suspend fun ping(): Boolean {
+        for (platform in listOf("kuwo", "netease", "migu")) {
+            val result = withTimeoutOrNull(8_000) {
+                runCatching { searchPlatform(platform, "爱") }.getOrNull()
+            }
+            if (!result.isNullOrEmpty()) return true
+        }
+        return false
+    }
+
+    /**
      * 聚合所有平台的推荐歌单/榜单。
      * 按平台隔离缓存（30 分钟），单平台失败只影响自己的分区。
      * 榜单（QQ/酷狗/酷我热歌榜）排在网易云推荐前面。
+     * v3.2：过滤 ContentCleaner 每周验证出的无效歌单黑名单（缓存放原始列表，返回前过滤）。
      */
     suspend fun getRecommendedPlaylists(): List<Playlist> = coroutineScope {
-        sources.map { source ->
+        val merged = sources.map { source ->
             async {
                 ApiCache.getOrPut("playlists:${source.platform}", ttlMs = 30 * 60_000) {
                     runCatching { source.getRecommendedPlaylists() }
@@ -184,6 +235,8 @@ class SourceManager(okHttpClient: OkHttpClient, settingsRepository: com.carmusic
                 }
             }
         }.flatMap { it.await() }
+        val invalid = settingsRepository.invalidPlaylists.first()
+        merged.filter { it.playlistId !in invalid }
             .sortedBy { if (it.isTopList) 0 else 1 }
     }
 
@@ -216,6 +269,9 @@ class SourceManager(okHttpClient: OkHttpClient, settingsRepository: com.carmusic
 
     companion object {
         private const val TAG = "SourceManager"
+
+        /** 流式搜索单源超时：慢源掉队不拖累整体上屏 */
+        private const val SOURCE_TIMEOUT_MS = 8_000L
 
         /** 标题归一化：小写、去【】/()（）内容、去空白（"xx（现场版）"≈"xx"，可用性优先） */
         private fun norm(s: String): String = s.lowercase()

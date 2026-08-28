@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -31,6 +32,13 @@ class SettingsRepository(private val context: Context) {
         private val KEY_EQ_BANDS = stringPreferencesKey("eq_bands")
         private val KEY_EQ_BASS = stringPreferencesKey("eq_bass")
         private val KEY_EQ_VIRTUALIZER = stringPreferencesKey("eq_virtualizer")
+        // v3.2 新增：自动更新 + 每周清理
+        private val KEY_UPDATE_URL = stringPreferencesKey("update_url")
+        private val KEY_AUTO_UPDATE_CHECK = booleanPreferencesKey("auto_update_check")
+        private val KEY_AUTO_CLEAN = booleanPreferencesKey("auto_clean")
+        private val KEY_LAST_CLEANUP_AT = longPreferencesKey("last_cleanup_at")
+        private val KEY_INVALID_PLAYLISTS = stringSetPreferencesKey("invalid_playlists")
+        private val KEY_PENDING_DEAD_TRACKS = stringSetPreferencesKey("pending_dead_tracks")
     }
 
     // 注：theme_mode（日间/自动主题）相关 key 与 ThemeMode 已整体移除——
@@ -115,4 +123,51 @@ class SettingsRepository(private val context: Context) {
     suspend fun setEqBands(csv: String) = context.settingsDataStore.edit { it[KEY_EQ_BANDS] = csv }
     suspend fun setEqBass(v: Int) = context.settingsDataStore.edit { it[KEY_EQ_BASS] = v.toString() }
     suspend fun setEqVirtualizer(v: Int) = context.settingsDataStore.edit { it[KEY_EQ_VIRTUALIZER] = v.toString() }
+
+    // ---- 自动更新（v3.2）----
+    /**
+     * version.json 地址，格式：{ "versionCode": 19, "versionName": "3.2.0", "url": "https://.../xxx.apk", "notes": "..." }。
+     * 留空 = 关闭自动更新（检查与设置页入口均静默跳过）。
+     * 默认指向 GitHub 公开仓库 carmusic-update（只放 version.json + APK，不含源码）。
+     */
+    val updateUrl: Flow<String> = context.settingsDataStore.data.map {
+        it[KEY_UPDATE_URL] ?: "https://raw.githubusercontent.com/soloman7/carmusic-update/main/version.json"
+    }
+
+    suspend fun setUpdateUrl(url: String) = context.settingsDataStore.edit { it[KEY_UPDATE_URL] = url.trim() }
+
+    /** 启动时自动检查更新 */
+    val autoUpdateCheck: Flow<Boolean> = context.settingsDataStore.data.map { it[KEY_AUTO_UPDATE_CHECK] ?: true }
+
+    suspend fun setAutoUpdateCheck(b: Boolean) = context.settingsDataStore.edit { it[KEY_AUTO_UPDATE_CHECK] = b }
+
+    // ---- 每周清理无效内容（v3.2）----
+    /** 每周自动清理收藏/历史死链、无效歌单、过期歌词 */
+    val autoClean: Flow<Boolean> = context.settingsDataStore.data.map { it[KEY_AUTO_CLEAN] ?: true }
+
+    suspend fun setAutoClean(b: Boolean) = context.settingsDataStore.edit { it[KEY_AUTO_CLEAN] = b }
+
+    /** 上次清理时间戳（毫秒，0=从未清理） */
+    val lastCleanupAt: Flow<Long> = context.settingsDataStore.data.map { it[KEY_LAST_CLEANUP_AT] ?: 0L }
+
+    suspend fun setLastCleanupAt(t: Long) = context.settingsDataStore.edit { it[KEY_LAST_CLEANUP_AT] = t }
+
+    /**
+     * 本周验证失败的推荐歌单黑名单（playlistId 集合）。
+     * 覆盖式写入：下周期重新验证通过的歌单自动移出黑名单。
+     */
+    val invalidPlaylists: Flow<Set<String>> = context.settingsDataStore.data.map { it[KEY_INVALID_PLAYLISTS] ?: emptySet() }
+
+    suspend fun setInvalidPlaylists(ids: Set<String>) = context.settingsDataStore.edit { it[KEY_INVALID_PLAYLISTS] = ids }
+
+    /**
+     * 上轮清理探测失败的 trackId 挂账集合。连续两轮（约 14 天）都失败才真正删除；
+     * 中间恢复播放的自动出账。防止单轮网络抖动/车库弱网把好歌当死链删掉。
+     */
+    val pendingDeadTracks: Flow<Set<String>> = context.settingsDataStore.data.map {
+        it[KEY_PENDING_DEAD_TRACKS] ?: emptySet()
+    }
+
+    suspend fun setPendingDeadTracks(ids: Set<String>) =
+        context.settingsDataStore.edit { it[KEY_PENDING_DEAD_TRACKS] = ids }
 }

@@ -43,3 +43,16 @@ data class LyricEntity(
     val tlyric: String? = null,  // 翻译歌词
     val cachedAt: Long = System.currentTimeMillis()
 )
+
+/**
+ * 播放会话快照（单行，id 恒为 0）：队列 + 当前索引 + 进度。
+ * DiLink 杀进程后恢复"停车前听到哪"，队列 Track 列表以 JSON 序列化存放。
+ */
+@Entity(tableName = "playback_state")
+data class PlaybackStateEntity(
+    @PrimaryKey val id: Int = 0,
+    val queueJson: String,
+    val currentIndex: Int,
+    val positionMs: Long,
+    val savedAt: Long = System.currentTimeMillis()
+)

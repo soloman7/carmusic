@@ -3,6 +3,7 @@ package com.carmusic.source.providers
 import com.carmusic.source.MusicSource
 import com.carmusic.source.model.LyricResult
 import com.carmusic.source.model.MediaSource
+import com.carmusic.source.model.Playlist
 import com.carmusic.source.model.Track
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -114,5 +115,62 @@ class KuwoSource(private val client: OkHttpClient) : MusicSource {
                 lrc.append(String.format("[%02d:%02d.%02d]%s\n", m, s, cs, text))
             }
             LyricResult(lrc = lrc.toString())
+        }
+
+    /**
+     * 推荐歌单 = 酷我官方榜单（kbangserver 老端点，零签名零 Cookie：
+     * 前 12 个 2026-08-06 实测存活，v3.2.0 新增 5 个 2026-08-24 实测曲目 95~100 首）。
+     * 酷我无可用匿名广场 API（wapi/apiwww 已被 WAF 拦死），不做广场。
+     */
+    override suspend fun getRecommendedPlaylists(): List<Playlist> = listOf(
+        16 to "酷我热歌榜", 17 to "酷我新歌榜", 26 to "酷我经典榜", 62 to "酷我华语榜",
+        93 to "酷我飙升榜", 104 to "酷我先锋榜", 145 to "酷我畅销榜", 151 to "腾讯音乐人原创榜",
+        158 to "短视频热歌榜", 187 to "流行趋势榜", 236 to "抖音最新热歌榜", 284 to "酷我热评榜",
+        22 to "酷我欧美榜", 23 to "酷我日韩榜", 64 to "酷我影视榜",
+        153 to "网红新歌榜", 287 to "DJ搜索榜"
+    ).map { (id, name) ->
+        Playlist(
+            platform = platform,
+            id = "bang:$id",
+            name = "酷我 · $name",
+            trackCount = 100,
+            description = "酷我官方榜单",
+            isTopList = true
+        )
+    }
+
+    /** 榜单曲目：musiclist[] 的 id 是纯数字，getMediaSource 会自动补 MUSIC_ 前缀 */
+    override suspend fun getPlaylistTracks(playlist: Playlist): List<Track> =
+        withContext(Dispatchers.IO) {
+            if (!playlist.id.startsWith("bang:")) return@withContext emptyList()
+            val bangId = playlist.id.removePrefix("bang:")
+            val url = "http://kbangserver.kuwo.cn/ksong.s" +
+                "?from=pc&fmt=json&type=bang&data=content&id=$bangId&rn=100"
+
+            val json = client.getJson(url, mapOf("User-Agent" to CHROME_UA))
+                ?: return@withContext emptyList()
+            val list = json.getAsJsonArray("musiclist") ?: return@withContext emptyList()
+
+            list.mapNotNull { el ->
+                try {
+                    val song = el.asJsonObject
+                    // 与 search 同款过滤：区域版权封锁一定播不了
+                    song.getAsJsonObject("payInfo")?.get("cannotOnlinePlay")
+                        ?.takeIf { !it.isJsonNull }?.let { flag ->
+                        if (flag.asString == "1" || flag.asBoolean) return@mapNotNull null
+                    }
+                    Track(
+                        platform = platform,
+                        id = song.get("id").asString,
+                        title = song.get("name").asString,
+                        artist = song.get("artist")?.asString ?: "",
+                        album = song.get("album")?.asString ?: "",
+                        duration = song.get("duration")?.asString?.toLongOrNull()
+                            ?: song.get("song_duration")?.asString?.toLongOrNull() ?: 0  // 秒
+                    )
+                } catch (e: Exception) {
+                    null
+                }
+            }
         }
 }

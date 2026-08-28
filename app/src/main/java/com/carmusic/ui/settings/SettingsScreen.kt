@@ -50,10 +50,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
+import com.carmusic.BuildConfig
 import com.carmusic.CarMusicApp
 import com.carmusic.crash.CrashHandler
 import com.carmusic.data.CacheRepository
 import com.carmusic.data.SettingsRepository
+import com.carmusic.maintenance.ContentCleaner
 import com.carmusic.ui.theme.CarBackground
 import com.carmusic.ui.theme.CarPrimary
 import com.carmusic.ui.theme.CarSurfaceVariant
@@ -62,17 +64,23 @@ import com.carmusic.ui.theme.CarTextTertiary
 import com.carmusic.ui.theme.PressableIconButton
 import com.carmusic.ui.theme.platformDisplayName
 import com.carmusic.ui.theme.rememberPressScale
+import com.carmusic.update.UpdateManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class SettingsViewModel(
     private val repo: SettingsRepository,
     private val cacheRepo: CacheRepository,
-    private val appContext: Context
+    private val appContext: Context,
+    private val updateManager: com.carmusic.update.UpdateManager,
+    private val contentCleaner: com.carmusic.maintenance.ContentCleaner
 ) : ViewModel() {
 
     val quality = repo.preferredQuality.stateIn(viewModelScope, SharingStarted.Eagerly, "320k")
@@ -84,6 +92,14 @@ class SettingsViewModel(
     val smtpPass = repo.smtpPass.stateIn(viewModelScope, SharingStarted.Eagerly, "")
     val emailTo = repo.emailTo.stateIn(viewModelScope, SharingStarted.Eagerly, "")
     val jamendoClientId = repo.jamendoClientId.stateIn(viewModelScope, SharingStarted.Eagerly, "")
+
+    // v3.2：自动更新 + 每周清理
+    val updateUrl = repo.updateUrl.stateIn(viewModelScope, SharingStarted.Eagerly, "")
+    val autoUpdateCheck = repo.autoUpdateCheck.stateIn(viewModelScope, SharingStarted.Eagerly, true)
+    val autoClean = repo.autoClean.stateIn(viewModelScope, SharingStarted.Eagerly, true)
+    val lastCleanupAt = repo.lastCleanupAt.stateIn(viewModelScope, SharingStarted.Eagerly, 0L)
+    val updateState = updateManager.state
+    val cleanState = contentCleaner.state
 
     private val _cacheSizeMB = MutableStateFlow(0L)
     val cacheSizeMB: StateFlow<Long> = _cacheSizeMB.asStateFlow()
@@ -115,6 +131,17 @@ class SettingsViewModel(
     fun setSmtpHost(host: String) = viewModelScope.launch { repo.setSmtpHost(host) }
     fun setSmtpPort(port: Int) = viewModelScope.launch { repo.setSmtpPort(port) }
     fun setJamendoClientId(id: String) = viewModelScope.launch { repo.setJamendoClientId(id) }
+
+    // v3.2：更新与清理
+    fun setUpdateUrl(url: String) = viewModelScope.launch { repo.setUpdateUrl(url) }
+    fun setAutoUpdateCheck(b: Boolean) = viewModelScope.launch { repo.setAutoUpdateCheck(b) }
+    fun setAutoClean(b: Boolean) = viewModelScope.launch { repo.setAutoClean(b) }
+    fun checkUpdate() = viewModelScope.launch { updateManager.checkForUpdate(force = true) }
+    fun downloadUpdate(info: com.carmusic.update.UpdateManager.RemoteVersion) =
+        viewModelScope.launch { updateManager.downloadApk(info) }
+    /** 安装下载好的 APK，返回 false 表示已跳系统授权页（授权后需再点一次安装） */
+    fun installUpdate(apk: java.io.File): Boolean = updateManager.installApk(appContext, apk)
+    fun cleanNow() = viewModelScope.launch { contentCleaner.runIfDue(force = true) }
 
     fun clearCache() = viewModelScope.launch {
         // 递归删除同样走 Dispatchers.IO（CacheRepository 内部切换）
@@ -160,6 +187,12 @@ fun SettingsScreen(
     val crashCount by vm.crashCount.collectAsState()
     val exportStatus by vm.exportStatus.collectAsState()
     val jamendoClientId by vm.jamendoClientId.collectAsState()
+    val updateUrl by vm.updateUrl.collectAsState()
+    val autoUpdateCheck by vm.autoUpdateCheck.collectAsState()
+    val autoClean by vm.autoClean.collectAsState()
+    val lastCleanupAt by vm.lastCleanupAt.collectAsState()
+    val updateState by vm.updateState.collectAsState()
+    val cleanState by vm.cleanState.collectAsState()
 
     // DataStore 首帧异步到达，不能用 remember(upstream) 重建输入框，
     // 否则会把用户正在输入的内容清掉；改为首次非空值到达时只填充一次
@@ -169,6 +202,7 @@ fun SettingsScreen(
     val smtpPassInput = rememberSyncedInput(smtpPass)
     val emailToInput = rememberSyncedInput(emailTo)
     val jamendoIdInput = rememberSyncedInput(jamendoClientId)
+    val updateUrlInput = rememberSyncedInput(updateUrl)
 
     var showClearCacheConfirm by remember { mutableStateOf(false) }
 
@@ -352,6 +386,149 @@ fun SettingsScreen(
         exportStatus?.let {
             Spacer(modifier = Modifier.height(8.dp))
             Text(it, color = CarTextSecondary, style = MaterialTheme.typography.bodyMedium)
+        }
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // 关于与更新（v3.2）
+        SectionTitle("关于与更新")
+        Text(
+            "当前版本：v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+            color = CarTextSecondary, style = MaterialTheme.typography.bodyLarge
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("启动时自动检查更新", color = Color.White, style = MaterialTheme.typography.bodyLarge)
+            Switch(
+                checked = autoUpdateCheck,
+                onCheckedChange = { vm.setAutoUpdateCheck(it) },
+                colors = SwitchDefaults.colors(checkedTrackColor = CarPrimary)
+            )
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            "车机没有应用商店，更新走自托管 version.json，填入地址即可启用；留空则关闭自动更新。",
+            color = CarTextTertiary, style = MaterialTheme.typography.bodyMedium
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedTextField(
+            value = updateUrlInput.value,
+            onValueChange = { updateUrlInput.value = it },
+            label = { Text("version.json 地址", color = CarTextTertiary) },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            colors = darkFieldColors()
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Button(
+                onClick = { vm.setUpdateUrl(updateUrlInput.value) },
+                colors = ButtonDefaults.buttonColors(containerColor = CarSurfaceVariant)
+            ) { Text("保存地址", color = Color.White) }
+            Button(
+                onClick = { vm.setUpdateUrl(updateUrlInput.value); vm.checkUpdate() },
+                colors = ButtonDefaults.buttonColors(containerColor = CarPrimary)
+            ) { Text("检查更新", color = Color.Black) }
+        }
+        // 更新状态展示
+        when (val s = updateState) {
+            is UpdateManager.UpdateState.Checking -> {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("正在检查更新…", color = CarTextSecondary, style = MaterialTheme.typography.bodyMedium)
+            }
+            is UpdateManager.UpdateState.UpToDate -> {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("已是最新版本", color = CarTextSecondary, style = MaterialTheme.typography.bodyMedium)
+            }
+            is UpdateManager.UpdateState.Available -> {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    "发现新版本 v${s.info.versionName}" + if (s.info.notes.isNotEmpty()) "：${s.info.notes}" else "",
+                    color = Color.White, style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Button(
+                    onClick = { vm.downloadUpdate(s.info) },
+                    colors = ButtonDefaults.buttonColors(containerColor = CarPrimary)
+                ) { Text("下载更新", color = Color.Black) }
+            }
+            is UpdateManager.UpdateState.Downloading -> {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("正在下载… ${s.percent}%", color = CarTextSecondary, style = MaterialTheme.typography.bodyMedium)
+            }
+            is UpdateManager.UpdateState.Ready -> {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("v${s.info.versionName} 已下载完成", color = Color.White, style = MaterialTheme.typography.bodyMedium)
+                Spacer(modifier = Modifier.height(8.dp))
+                Button(
+                    onClick = { vm.installUpdate(s.apk) },
+                    colors = ButtonDefaults.buttonColors(containerColor = CarPrimary)
+                ) { Text("立即安装", color = Color.Black) }
+            }
+            is UpdateManager.UpdateState.Error -> {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(s.message, color = CarTextSecondary, style = MaterialTheme.typography.bodyMedium)
+            }
+            else -> {}
+        }
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // 内容清理（v3.2）
+        SectionTitle("内容清理")
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("每周自动清理无效内容", color = Color.White, style = MaterialTheme.typography.bodyLarge)
+            Switch(
+                checked = autoClean,
+                onCheckedChange = { vm.setAutoClean(it) },
+                colors = SwitchDefaults.colors(checkedTrackColor = CarPrimary)
+            )
+        }
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            "清理收藏/历史里的死链歌曲、加载失败的推荐歌单和 30 天前的歌词缓存。",
+            color = CarTextTertiary, style = MaterialTheme.typography.bodyMedium
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                if (lastCleanupAt > 0)
+                    "上次清理：" + SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(lastCleanupAt))
+                else "尚未清理过",
+                color = CarTextSecondary, style = MaterialTheme.typography.bodyMedium
+            )
+            Button(
+                onClick = { vm.cleanNow() },
+                colors = ButtonDefaults.buttonColors(containerColor = CarSurfaceVariant)
+            ) { Text("立即清理", color = Color.White) }
+        }
+        when (val s = cleanState) {
+            is ContentCleaner.CleanState.Running -> {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("正在清理，请稍候…", color = CarTextSecondary, style = MaterialTheme.typography.bodyMedium)
+            }
+            is ContentCleaner.CleanState.Done -> {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    "清理完成：删除死链歌曲 ${s.removedTracks} 首，无效歌单 ${s.invalidPlaylists} 个",
+                    color = CarTextSecondary, style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            is ContentCleaner.CleanState.Error -> {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(s.message, color = CarTextSecondary, style = MaterialTheme.typography.bodyMedium)
+            }
+            else -> {}
         }
         Spacer(modifier = Modifier.height(32.dp))
     }

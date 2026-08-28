@@ -39,6 +39,15 @@ object ApiCache {
         }
     }
 
+    /** 未过期命中返回原始值（调用方自行转型），否则 null。流式搜索的快速路径用。 */
+    fun peekFresh(key: String): Any? =
+        cache.get(key)?.takeIf { it.expiresAt > System.currentTimeMillis() }?.data
+
+    /** 直接写入（不经 getOrPut 的 per-key 锁）。流式搜索收齐各源后写合并结果用。 */
+    fun putDirect(key: String, value: Any, ttlMs: Long = 5 * 60_000) {
+        cache.put(key, Entry(value, System.currentTimeMillis() + ttlMs))
+    }
+
     fun clear() {
         cache.evictAll()
         locks.clear()

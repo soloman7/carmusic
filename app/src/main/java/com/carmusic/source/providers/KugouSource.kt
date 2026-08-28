@@ -123,63 +123,150 @@ class KugouSource(private val client: OkHttpClient) : MusicSource {
             }.getOrNull()
         }
 
-    // rankid 均实测有效（2026-07-28 curl 验证返回 rankname）
+    // rankid 均实测有效（前 3 个 2026-07-28 curl 验证返回 rankname；
+    // v3.2.0 新增 6 个 2026-08-24 从 m.kugou.com/rank/list 实拉并逐个验证曲目可取）
     override suspend fun getRecommendedPlaylists(): List<Playlist> = listOf(
         Playlist(platform = platform, id = "rank:8888", name = "酷狗 · TOP500", trackCount = 50, description = "每日更新", isTopList = true),
         Playlist(platform = platform, id = "rank:6666", name = "酷狗 · 飙升榜", trackCount = 50, description = "每日更新", isTopList = true),
-        Playlist(platform = platform, id = "rank:31308", name = "酷狗 · 内地榜", trackCount = 50, description = "每周更新", isTopList = true)
+        Playlist(platform = platform, id = "rank:31308", name = "酷狗 · 内地榜", trackCount = 50, description = "每周更新", isTopList = true),
+        Playlist(platform = platform, id = "rank:74534", name = "酷狗 · 新歌榜", trackCount = 50, description = "每日更新", isTopList = true),
+        Playlist(platform = platform, id = "rank:82831", name = "酷狗 · 网络热歌榜", trackCount = 50, description = "每日更新", isTopList = true),
+        Playlist(platform = platform, id = "rank:85432", name = "酷狗 · 百万收藏榜", trackCount = 50, description = "每日更新", isTopList = true),
+        Playlist(platform = platform, id = "rank:24971", name = "酷狗 · DJ热歌榜", trackCount = 50, description = "每周更新", isTopList = true),
+        Playlist(platform = platform, id = "rank:33165", name = "酷狗 · 粤语金曲榜", trackCount = 50, description = "每周更新", isTopList = true),
+        Playlist(platform = platform, id = "rank:33163", name = "酷狗 · 影视金曲榜", trackCount = 50, description = "每周更新", isTopList = true)
     )
 
     override suspend fun getPlaylistTracks(playlist: Playlist): List<Track> =
         withContext(Dispatchers.IO) {
-            if (!playlist.id.startsWith("rank:")) return@withContext emptyList()
-            val rankId = playlist.id.removePrefix("rank:")
-            // 实测无需签名；m.kugou.com 已支持 https（明文白名单仅为流 CDN 保留）
-            val url = "https://m.kugou.com/rank/info/?rankid=$rankId&page=1&json=true"
-
-            val request = Request.Builder()
-                .url(url)
-                .header("User-Agent", CHROME_UA)
-                .build()
-
-            client.newCall(request).execute().use { resp ->
-                if (!resp.isSuccessful) return@withContext emptyList()
-                val text = resp.body?.string() ?: return@withContext emptyList()
-                val json = runCatching { JsonParser.parseString(text).asJsonObject }.getOrNull()
-                // songs 在顶层，不在 info 里（已实测）
-                val list = json?.optObj("songs")?.optArr("list")
-                if (list == null) {
-                    android.util.Log.w("KugouSource", "rank parse failed: ${text.take(500)}")
-                    return@withContext emptyList()
-                }
-
-                list.mapNotNull { el ->
-                    try {
-                        val song = el.asJsonObject
-                        val hash = song.optStr("hash") ?: return@mapNotNull null
-                        Track(
-                            platform = platform,
-                            id = hash,
-                            title = song.optStr("songname") ?: return@mapNotNull null,
-                            artist = song.optArr("authors")?.let { arr ->
-                                (0 until arr.size()).mapNotNull { i ->
-                                    arr[i].asJsonObject.optStr("author_name")
-                                }.joinToString("/")
-                            }?.takeIf { it.isNotBlank() }
-                                ?: song.optStr("singername") ?: "",
-                            coverUrl = song.optStr("imgurl")?.replace("{size}", "400"),
-                            duration = song.optLong("duration") ?: 0,
-                            extra = buildMap {
-                                put("hash", hash)
-                                put("albumId", song.optStr("album_id") ?: "")
-                                song.optStr("sqhash")?.let { put("sqhash", it) }
-                                song.optStr("320hash")?.let { put("hqhash", it) }
-                            }
-                        )
-                    } catch (e: Exception) {
-                        null
-                    }
-                }.take(50)
+            when {
+                playlist.id.startsWith("rank:") -> fetchRankTracks(playlist.id.removePrefix("rank:"))
+                playlist.id.startsWith("sp:") -> fetchSpecialTracks(playlist.id.removePrefix("sp:"))
+                else -> emptyList()
             }
         }
+
+    /** 歌单广场：m.kugou.com/plist/index，30 条/页，实测无需签名（2026-08-06） */
+    override suspend fun getPlaylistSquare(offset: Int): List<Playlist> =
+        withContext(Dispatchers.IO) {
+            val page = offset / 30 + 1
+            val url = "https://m.kugou.com/plist/index?json=true&page=$page"
+
+            val json = client.getJson(url, mapOf("User-Agent" to CHROME_UA))
+                ?: return@withContext emptyList()
+            val list = json.optObj("plist")?.optObj("list")?.optArr("info")
+                ?: return@withContext emptyList()
+
+            list.mapNotNull { el ->
+                try {
+                    val item = el.asJsonObject
+                    Playlist(
+                        platform = platform,
+                        id = "sp:${item.optLong("specialid") ?: return@mapNotNull null}",
+                        name = item.optStr("specialname") ?: return@mapNotNull null,
+                        coverUrl = item.optStr("imgurl")?.replace("{size}", "400"),
+                        trackCount = (item.optLong("songcount") ?: 0).toInt(),
+                        description = "酷狗歌单"
+                    )
+                } catch (e: Exception) {
+                    null
+                }
+            }
+        }
+
+    private fun fetchRankTracks(rankId: String): List<Track> {
+        // 实测无需签名；m.kugou.com 已支持 https（明文白名单仅为流 CDN 保留）
+        val url = "https://m.kugou.com/rank/info/?rankid=$rankId&page=1&json=true"
+
+        val request = Request.Builder()
+            .url(url)
+            .header("User-Agent", CHROME_UA)
+            .build()
+
+        client.newCall(request).execute().use { resp ->
+            if (!resp.isSuccessful) return emptyList()
+            val text = resp.body?.string() ?: return emptyList()
+            val json = runCatching { JsonParser.parseString(text).asJsonObject }.getOrNull()
+            // songs 在顶层，不在 info 里（已实测）
+            val list = json?.optObj("songs")?.optArr("list")
+            if (list == null) {
+                android.util.Log.w("KugouSource", "rank parse failed: ${text.take(500)}")
+                return emptyList()
+            }
+
+            return list.mapNotNull { el ->
+                try {
+                    val song = el.asJsonObject
+                    val hash = song.optStr("hash") ?: return@mapNotNull null
+                    Track(
+                        platform = platform,
+                        id = hash,
+                        title = song.optStr("songname") ?: return@mapNotNull null,
+                        artist = song.optArr("authors")?.let { arr ->
+                            (0 until arr.size()).mapNotNull { i ->
+                                arr[i].asJsonObject.optStr("author_name")
+                            }.joinToString("/")
+                        }?.takeIf { it.isNotBlank() }
+                            ?: song.optStr("singername") ?: "",
+                        coverUrl = song.optStr("imgurl")?.replace("{size}", "400"),
+                        duration = song.optLong("duration") ?: 0,
+                        extra = buildMap {
+                            put("hash", hash)
+                            put("albumId", song.optStr("album_id") ?: "")
+                            song.optStr("sqhash")?.let { put("sqhash", it) }
+                            song.optStr("320hash")?.let { put("hqhash", it) }
+                        }
+                    )
+                } catch (e: Exception) {
+                    null
+                }
+            }.take(50)
+        }
+    }
+
+    /**
+     * 广场歌单曲目：mobilecdnbj special/song（实测 2026-08-06 可用，分页正常）。
+     * 该端点无 songname 字段，标题/歌手从 filename（"歌手 - 歌名"）拆分。
+     */
+    private fun fetchSpecialTracks(specialId: String): List<Track> {
+        val url = "http://mobilecdnbj.kugou.com/api/v3/special/song" +
+            "?specialid=$specialId&page=1&pagesize=50"
+
+        val json = runCatching {
+            val request = Request.Builder().url(url).header("User-Agent", CHROME_UA).build()
+            client.newCall(request).execute().use { resp ->
+                if (!resp.isSuccessful) return emptyList()
+                JsonParser.parseString(resp.body?.string() ?: return emptyList()).asJsonObject
+            }
+        }.getOrNull() ?: return emptyList()
+
+        val list = json.optObj("data")?.optArr("info") ?: return emptyList()
+        return list.mapNotNull { el ->
+            try {
+                val song = el.asJsonObject
+                val hash = song.optStr("hash") ?: return@mapNotNull null
+                val filename = song.optStr("filename") ?: return@mapNotNull null
+                // "歌手 - 歌名" 拆分；无分隔符时整段当标题
+                val sep = filename.indexOf(" - ")
+                val (artist, title) = if (sep > 0) {
+                    filename.substring(0, sep).trim() to filename.substring(sep + 3).trim()
+                } else "" to filename.trim()
+                Track(
+                    platform = platform,
+                    id = hash,
+                    title = title,
+                    artist = artist,
+                    duration = song.optLong("duration") ?: 0,
+                    extra = buildMap {
+                        put("hash", hash)
+                        put("albumId", song.optStr("album_id") ?: "")
+                        song.optStr("sqhash")?.let { put("sqhash", it) }
+                        song.optStr("320hash")?.let { put("hqhash", it) }
+                    }
+                )
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }
 }

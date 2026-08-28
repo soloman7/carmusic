@@ -37,6 +37,8 @@ class MaoerSource(private val client: OkHttpClient) : MusicSource {
             datas.mapNotNull { el ->
                 try {
                     val s = el.asJsonObject
+                    // 付费剧集（pay_type=2）getsound 不给 soundurl 必播不了，直接过滤（2026-08-06 实测）
+                    if (s.get("pay_type")?.takeIf { !it.isJsonNull }?.asInt == 2) return@mapNotNull null
                     Track(
                         platform = platform,
                         id = s.get("id").asString,
@@ -65,4 +67,38 @@ class MaoerSource(private val client: OkHttpClient) : MusicSource {
         }
 
     override suspend fun getLyric(track: Track): LyricResult? = null
+
+    /**
+     * 主题"歌单"：猫耳官方歌单/广播剧 API 已全部 404（2026-08-06 实测 dramaapi/malbum/album
+     * 等 10+ 端点均死），唯一存活的是搜索+取流，故用主题关键词搜索快照充当歌单。
+     * v3.2.0 新增 6 个主题（2026-08-24 实测：免费结果 23~30/30，取流抽查 2/2 可播）。
+     */
+    override suspend fun getRecommendedPlaylists(): List<Playlist> = listOf(
+        "热门广播剧" to "广播剧精选",
+        "助眠" to "睡前助眠",
+        "白噪音" to "白噪音",
+        "有声小说" to "有声小说",
+        "情感电台" to "情感电台",
+        "耳语" to "耳边轻语",
+        "悬疑广播剧" to "悬疑剧场",
+        "儿童故事" to "儿童故事",
+        "相声" to "相声茶馆",
+        "睡前故事" to "睡前故事",
+        "历史" to "历史人文",
+        "评书" to "评书连播"
+    ).map { (kw, name) ->
+        Playlist(
+            platform = platform,
+            id = "kw:$kw",
+            name = "猫耳 · $name",
+            trackCount = 30,
+            description = "主题声音集"
+        )
+    }
+
+    /** 主题歌单曲目 = 关键词搜索结果（已验证可 getsound 取流） */
+    override suspend fun getPlaylistTracks(playlist: Playlist): List<Track> =
+        if (playlist.id.startsWith("kw:")) {
+            search(playlist.id.removePrefix("kw:"), page = 1, limit = 30)
+        } else emptyList()
 }

@@ -83,3 +83,12 @@ interface LyricDao {
     @Query("DELETE FROM lyrics WHERE cachedAt < :timestamp")
     suspend fun deleteOlderThan(timestamp: Long)
 }
+
+@Dao
+interface PlaybackStateDao {
+    @Query("SELECT * FROM playback_state WHERE id = 0")
+    suspend fun get(): PlaybackStateEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(entity: PlaybackStateEntity)
+}

@@ -508,5 +508,6 @@ private val PLATFORM_FILTERS = listOf<Pair<String?, String>>(
     "netease" to "网易",
     "qq" to "QQ音乐",
     "migu" to "咪咕",
+    "kugou" to "酷狗",
     "jamendo" to "免费电台"
 )

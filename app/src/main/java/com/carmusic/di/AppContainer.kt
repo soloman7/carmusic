@@ -9,6 +9,7 @@ import com.carmusic.data.CacheRepository
 import com.carmusic.data.SettingsRepository
 import com.carmusic.drive.DrivingDetector
 import com.carmusic.lyric.LyricRepository
+import com.carmusic.maintenance.ContentCleaner
 import com.carmusic.playback.PlayerManager
 import com.carmusic.source.SourceManager
 import com.carmusic.ui.drive.DriveViewModel
@@ -18,9 +19,11 @@ import com.carmusic.ui.player.PlayerViewModel
 import com.carmusic.ui.playlist.PlaylistViewModel
 import com.carmusic.ui.search.SearchViewModel
 import com.carmusic.ui.settings.SettingsViewModel
+import com.carmusic.update.UpdateManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import okhttp3.Cache
@@ -48,6 +51,9 @@ class AppContainer(context: Context) {
     val playerManager: PlayerManager = PlayerManager(appContext, sourceManager, database, settingsRepository)
     val eqManager: com.carmusic.playback.EqManager = com.carmusic.playback.EqManager(settingsRepository, playerManager)
     val drivingDetector: DrivingDetector = DrivingDetector(appContext)
+    // v3.2 新增：自动更新 + 每周清理无效内容
+    val updateManager: UpdateManager = UpdateManager(appContext, okHttpClient, settingsRepository)
+    val contentCleaner: ContentCleaner = ContentCleaner(settingsRepository, sourceManager, database, playerManager)
 
     // 容器级协程：跟随设置变化把 SMTP host/port 注入 CrashHandler（崩溃日志导出用）
     private val containerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -56,6 +62,16 @@ class AppContainer(context: Context) {
         containerScope.launch {
             combine(settingsRepository.smtpHost, settingsRepository.smtpPort) { h, p -> h to p }
                 .collect { (host, port) -> CrashHandler.configureSmtp(host, port) }
+        }
+        // v3.2：启动后静默检查更新（未配置更新地址则内部直接跳过）与每周清理，
+        // 延迟触发避开启动高峰，失败均静默不打扰驾驶场景
+        containerScope.launch {
+            delay(5_000)
+            runCatching { updateManager.checkForUpdate() }
+        }
+        containerScope.launch {
+            delay(10_000)
+            runCatching { contentCleaner.runIfDue() }
         }
     }
 
@@ -78,7 +94,7 @@ class AppContainer(context: Context) {
         initializer { PlaylistViewModel(sourceManager, playerManager) }
     }
     val settingsVMFactory = viewModelFactory {
-        initializer { SettingsViewModel(settingsRepository, cacheRepository, appContext) }
+        initializer { SettingsViewModel(settingsRepository, cacheRepository, appContext, updateManager, contentCleaner) }
     }
     val eqVMFactory = viewModelFactory {
         initializer { com.carmusic.ui.eq.EqViewModel(eqManager) }

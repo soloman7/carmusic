@@ -178,7 +178,7 @@ class QQSource(private val client: OkHttpClient) : MusicSource {
             LyricResult(lrc = lrc, tlyric = tlrc)
         }
 
-    /** 榜单定义（topid 全部 curl 实测有效、含 pic_v12 封面，2026-08-05） */
+    /** 榜单定义（topid 全部 curl 实测有效、含 pic_v12 封面：前 12 个 2026-08-05，v3.2.0 新增 6 个 2026-08-24） */
     private data class ToplistDef(
         val id: String, val name: String, val updateDesc: String, val trackCount: Int = 100
     )
@@ -195,10 +195,16 @@ class QQSource(private val client: OkHttpClient) : MusicSource {
         ToplistDef("57", "QQ音乐 · 电音榜", "每周更新", 50),
         ToplistDef("58", "QQ音乐 · 说唱榜", "每周更新", 50),
         ToplistDef("67", "QQ音乐 · 听歌识曲榜", "每日更新"),
-        ToplistDef("108", "QQ音乐 · 美国公告牌榜", "每周更新")
+        ToplistDef("108", "QQ音乐 · 美国公告牌榜", "每周更新"),
+        ToplistDef("28", "QQ音乐 · 网络歌曲榜", "每周更新"),
+        ToplistDef("29", "QQ音乐 · 影视金曲榜", "每周更新"),
+        ToplistDef("65", "QQ音乐 · 国风热歌榜", "每周更新"),
+        ToplistDef("63", "QQ音乐 · DJ舞曲榜", "每周更新"),
+        ToplistDef("72", "QQ音乐 · 动漫音乐榜", "每周更新"),
+        ToplistDef("16", "QQ音乐 · 韩国榜", "每周更新")
     )
 
-    /** 并行拉 12 个榜的真封面（topinfo.pic_v12），单榜失败兜底 null（UI 占位） */
+    /** 并行拉全部榜单的真封面（topinfo.pic_v12），单榜失败兜底 null（UI 占位） */
     override suspend fun getRecommendedPlaylists(): List<Playlist> = coroutineScope {
         toplists.map { def ->
             async {

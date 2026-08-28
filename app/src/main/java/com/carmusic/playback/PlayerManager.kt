@@ -10,6 +10,7 @@ import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.carmusic.data.HistoryEntity
+import com.carmusic.data.PlaybackStateEntity
 import com.carmusic.source.model.MediaSource
 import com.carmusic.source.model.Track
 import com.google.common.util.concurrent.ListenableFuture
@@ -100,6 +101,19 @@ class PlayerManager(
     // MediaController 连接完成前点击的播放请求，连接后补播
     private var pendingPlay: Track? = null
 
+    // ---- 播放会话持久化（DiLink 杀进程后恢复"停车前听到哪"）----
+    private data class RestoredPlayback(val queue: List<Track>, val index: Int, val positionMs: Long)
+
+    /** 已从 DB 读出但尚未消费的快照：UI 先显示上次播放内容，用户点播放/切歌才真正重建队列 */
+    private var restoredSnapshot: RestoredPlayback? = null
+
+    /** 恢复播放待消费的进度（ms）与目标 trackId：恢复队列首次 READY 时 seek 过去，-1 表示无 */
+    private var pendingRestorePositionMs = -1L
+    private var pendingRestoreTrackId: String? = null
+
+    // 位置更新节拍计数：播放中每 ~10s 落盘一次进度
+    private var persistTick = 0
+
     // Track 登记表：MediaItem 只带 mediaId，不跨 binder 传 Serializable（BadParcelable 风险敞口归零）
     private val trackRegistry = java.util.Collections.synchronizedMap(
         object : LinkedHashMap<String, Track>(64, 0.75f, true) {
@@ -121,6 +135,21 @@ class PlayerManager(
             val saved = runCatching { PlayMode.valueOf(settingsRepository.playMode.first()) }
                 .getOrDefault(PlayMode.REPEAT_ALL)
             applyPlayMode(saved, persist = false)
+        }
+        // 读取上次播放会话快照（只读不播：等用户点播放/切歌再重建队列）
+        scope.launch {
+            val saved = runCatching { database.playbackStateDao().get() }.getOrNull() ?: return@launch
+            val queue = PlaybackSessionCodec.decode(saved.queueJson) ?: return@launch
+            if (queue.isEmpty()) return@launch
+            val snapshot = RestoredPlayback(
+                queue,
+                saved.currentIndex.coerceIn(0, queue.size - 1),
+                saved.positionMs.coerceAtLeast(0L)
+            )
+            restoredSnapshot = snapshot
+            // UI 先呈现上次内容（timeline 仍为空，点播放才真正恢复）
+            _queue.value = queue
+            _currentTrack.value = queue.getOrNull(snapshot.index)
         }
     }
 
@@ -146,6 +175,7 @@ class PlayerManager(
         override fun onIsPlayingChanged(playing: Boolean) {
             _isPlaying.value = playing
             if (playing) consecutiveSkips = 0   // 有歌成功出声，重置跳歌保护
+            else persistNow()   // 暂停点即存档点（含熄火、导航打断）
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -191,11 +221,21 @@ class PlayerManager(
 
             // 触发下一首 URL 预加载
             schedulePreloadNext()
+            persistNow()   // 切歌即存档（索引、队列）
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
             if (playbackState == Player.STATE_READY) {
                 _duration.value = controller?.duration ?: 0L
+                // 恢复播放：首轮 READY seek 到上次进度（仅当起始曲目就是存档曲目）
+                if (pendingRestorePositionMs >= 0) {
+                    val c = controller
+                    if (c != null && c.currentMediaItem?.mediaId == pendingRestoreTrackId) {
+                        c.seekTo(pendingRestorePositionMs)
+                    }
+                    pendingRestorePositionMs = -1L
+                    pendingRestoreTrackId = null
+                }
             }
             // ENDED 只在 repeatMode=OFF 的 SEQUENCE/SHUFFLE 下到达（REPEAT_ALL/ONE 由 ExoPlayer 原生处理）
             if (playbackState == Player.STATE_ENDED && _playMode.value == PlayMode.SHUFFLE) {
@@ -242,10 +282,11 @@ class PlayerManager(
 
     /** 播放一首歌曲 */
     fun play(track: Track, addToQueue: Boolean = false) {
-        // 用户主动播放视为新会话，重置重试状态
+        // 用户主动播放视为新会话，重置重试状态与待恢复快照
         retryCount = 0
         consecutiveFailTrack = null
         retryJob?.cancel()
+        restoredSnapshot = null
         if (!addToQueue) {
             // 单曲播放替换队列，必须先杀掉进行中的整单解析，否则旧 phase2 会越界插队
             playAllJob?.cancel()
@@ -267,20 +308,7 @@ class PlayerManager(
                 return@launch
             }
 
-            val metadata = MediaMetadata.Builder()
-                .setTitle(track.title)
-                .setArtist(track.artist)
-                .setAlbumTitle(track.album)
-                .setArtworkUri(track.coverUrl?.let { android.net.Uri.parse(it) })
-                .build()
-
-            val mediaItem = MediaItem.Builder()
-                .setUri(mediaSource.url)
-                .setMediaId(track.trackId)
-                .setMediaMetadata(metadata)
-                .build()
-            trackRegistry[track.trackId] = track
-
+            val mediaItem = buildMediaItem(track, mediaSource)
             val player = controller ?: return@launch
 
             if (addToQueue) {
@@ -305,6 +333,7 @@ class PlayerManager(
         retryCount = 0
         consecutiveFailTrack = null
         retryJob?.cancel()
+        restoredSnapshot = null
         preloadedSources.clear()
         // 关键：取消上一个还在跑的整单解析。旧 phase2 若继续往新队列插队，
         // pos 按旧队列算出、队列却已被 setMediaItems 重置 → addMediaItem 越界
@@ -314,20 +343,7 @@ class PlayerManager(
             _error.value = null
             val player = controller ?: return@launch
 
-            fun buildItem(t: Track, source: MediaSource): MediaItem {
-                val meta = MediaMetadata.Builder()
-                    .setTitle(t.title)
-                    .setArtist(t.artist)
-                    .setAlbumTitle(t.album)
-                    .setArtworkUri(t.coverUrl?.let { android.net.Uri.parse(it) })
-                    .build()
-                trackRegistry[t.trackId] = t
-                return MediaItem.Builder()
-                    .setUri(source.url)
-                    .setMediaId(t.trackId)
-                    .setMediaMetadata(meta)
-                    .build()
-            }
+            fun buildItem(t: Track, source: MediaSource): MediaItem = buildMediaItem(t, source)
 
             // phase1：原平台快路径（8 路并发）
             val phase1 = coroutineScope {
@@ -416,7 +432,19 @@ class PlayerManager(
     }
 
     fun togglePlayPause() {
-        controller?.let { if (it.isPlaying) it.pause() else it.play() }
+        val c = controller ?: return
+        // 上次会话恢复：timeline 空 + 有未消费快照 → 点播放 = 续播上次的队列和进度
+        if (c.mediaItemCount == 0) {
+            restoredSnapshot?.let { resumeRestored(it); return }
+        }
+        if (c.isPlaying) c.pause() else c.play()
+    }
+
+    private fun resumeRestored(snap: RestoredPlayback) {
+        restoredSnapshot = null
+        pendingRestorePositionMs = snap.positionMs
+        pendingRestoreTrackId = snap.queue.getOrNull(snap.index)?.trackId
+        playAll(snap.queue, snap.index)
     }
 
     // ---- 播放模式 ----
@@ -454,6 +482,10 @@ class PlayerManager(
     /** @param playerOverride controller 未连接时由 PlaybackService 传入 ExoPlayer 直连 */
     fun nextOn(playerOverride: Player?) {
         val c = playerOverride ?: controller ?: return
+        // 杀进程后方向盘按键直接恢复上次会话（车机常见：上车先按下一首）
+        if (c.mediaItemCount == 0) {
+            restoredSnapshot?.let { resumeRestored(it); return }
+        }
         val target = navigator.nextIndex(
             c.currentMediaItemIndex, c.mediaItemCount, _playMode.value
         ) { Random.nextInt(it) }
@@ -462,6 +494,9 @@ class PlayerManager(
 
     fun previousOn(playerOverride: Player?) {
         val c = playerOverride ?: controller ?: return
+        if (c.mediaItemCount == 0) {
+            restoredSnapshot?.let { resumeRestored(it); return }
+        }
         // 车机惯例：当前曲已播 >3s，"上一首"先回本曲开头；再按才真上一首
         if (c.playbackState != Player.STATE_ENDED && c.currentPosition > 3000 && c.mediaItemCount > 1) {
             c.seekTo(0)
@@ -491,16 +526,61 @@ class PlayerManager(
         _error.value = null
     }
 
+    /** 维护任务避让：播放中挂起等待，空闲则立即返回。清理等后台网络任务在每次探测前调用。 */
+    suspend fun awaitNotPlaying() {
+        isPlaying.first { !it }
+    }
+
     private fun refreshAndRetry(track: Track) {
-        // URL 过期重新拉；先杀掉进行中的整单解析（refreshAndRetry→play 会重置队列）
+        // URL 过期重新拉；先杀掉进行中的整单解析，避免与 phase2 插队互踩
         playAllJob?.cancel()
         playAllJob = null
         scope.launch {
             val newSource = runCatching { sourceManager.getMediaSource(track) }.getOrNull()
-            if (newSource != null) {
+            if (newSource == null) {
+                _error.value = "「${track.title}」重新获取播放地址失败"
+                return@launch
+            }
+            val player = controller ?: run { play(track); return@launch }
+            // 队列里仍有该曲目时原位替换：队列、位置、后续播放顺序全部保留。
+            // （旧实现调 play(track) → setMediaItem 会把整个队列炸成单曲，
+            //   停车 20 分钟回来恢复播放即触发，队列丢失。）
+            val index = (0 until player.mediaItemCount)
+                .firstOrNull { player.getMediaItemAt(it).mediaId == track.trackId }
+            if (index == null) {
                 play(track)
+                return@launch
+            }
+            runCatching {
+                player.replaceMediaItem(index, buildMediaItem(track, newSource))
+                if (player.playbackState == Player.STATE_IDLE ||
+                    player.playbackState == Player.STATE_ENDED
+                ) {
+                    player.prepare()
+                }
+                player.play()
+            }.onFailure {
+                Log.e(TAG, "replaceMediaItem failed", it)
+                play(track)   // 原位替换失败时兜底，宁可丢队列也不能停摆
             }
         }
+    }
+
+    /** Track + 已解析音源 → MediaItem（登记进 trackRegistry，供 transition 回调查 Track） */
+    private fun buildMediaItem(t: Track, source: MediaSource): MediaItem {
+        trackRegistry[t.trackId] = t
+        return MediaItem.Builder()
+            .setUri(source.url)
+            .setMediaId(t.trackId)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(t.title)
+                    .setArtist(t.artist)
+                    .setAlbumTitle(t.album)
+                    .setArtworkUri(t.coverUrl?.let { android.net.Uri.parse(it) })
+                    .build()
+            )
+            .build()
     }
 
     /** 预加载下一首的 URL，不走跨平台 fallback */
@@ -535,10 +615,33 @@ class PlayerManager(
                     if (c.isPlaying || c.playbackState == Player.STATE_READY) {
                         _position.value = c.currentPosition
                     }
+                    // 播放中每 ~10s 落盘一次进度（进程被杀最多丢 10 秒）
+                    if (c.isPlaying) {
+                        if (++persistTick >= 20) {
+                            persistTick = 0
+                            persistNow()
+                        }
+                    } else {
+                        persistTick = 0
+                    }
                 }
                 delay(500)
             }
         }
+    }
+
+    /** 当前队列 + 索引 + 进度写 playback_state（单行覆盖）。timeline 为空时不写，避免覆盖有效存档。 */
+    private fun persistNow() {
+        val c = controller ?: return
+        val q = _queue.value
+        if (c.mediaItemCount == 0 || q.isEmpty()) return
+        val index = c.currentMediaItemIndex.coerceIn(0, q.size - 1)
+        val entity = PlaybackStateEntity(
+            queueJson = PlaybackSessionCodec.encode(q),
+            currentIndex = index,
+            positionMs = c.currentPosition.coerceAtLeast(0L)
+        )
+        scope.launch { runCatching { database.playbackStateDao().upsert(entity) } }
     }
 
     fun release() {

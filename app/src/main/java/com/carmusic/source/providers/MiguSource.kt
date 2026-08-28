@@ -189,6 +189,10 @@ class MiguSource(private val client: OkHttpClient) : MusicSource {
             songs.mapNotNull { el ->
                 try {
                     val s = el.asJsonObject
+                    // 会员专属歌匿名必播不了（listen 返回 cannotCode=440013），实测 showTags
+                    // 含 "vip" 与不可播 100% 吻合（2026-08-06 抽样验证），零成本预过滤
+                    val showTags = s.getAsJsonArray("showTags")
+                    if (showTags != null && showTags.any { it.asString == "vip" }) return@mapNotNull null
                     Track(
                         platform = platform,
                         id = s.get("copyrightId").asString,

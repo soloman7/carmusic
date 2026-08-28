@@ -60,9 +60,12 @@ class SearchViewModel(
         _error.value = null
         searchJob = viewModelScope.launch {
             try {
-                _results.value = sourceManager.searchAll(k, enabledPlatforms.value)
+                // 流式聚合：快源先上屏，慢源（8s 超时）后补，用户不用等最慢平台
+                sourceManager.searchAllStream(k, enabledPlatforms.value).collect { merged ->
+                    _results.value = merged
+                }
             } catch (e: Exception) {
-                Log.e(TAG, "searchAll failed: $k", e)
+                Log.e(TAG, "search failed: $k", e)
                 _results.value = emptyList()
                 _error.value = "搜索失败，请检查网络后重试"
             } finally {

@@ -22,8 +22,8 @@ android {
         applicationId = "com.carmusic"
         minSdk = 26
         targetSdk = 35
-        versionCode = 16
-        versionName = "2.9.0"
+        versionCode = 20
+        versionName = "3.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -124,8 +124,6 @@ dependencies {
 
     // Network
     implementation(libs.okhttp)
-    implementation(libs.retrofit)
-    implementation(libs.retrofit.converter.gson)
     implementation(libs.gson)
 
     // Room

@@ -20,7 +20,7 @@ import java.net.URLEncoder
  * tracks 返回直接带 mp3 直连（audio 字段），getMediaSource 无需再请求。
  *
  * v2.8.0：用户歌单广场弃用（实测全是 spam/空歌单/重复，creationdate 全为 0000），
- * 改为 9 个 tags 主题精选（每个已 curl 实测 ≥50 首含 audio）。
+ * 改为 tags 主题精选（v3.1.0 扩到 25 个，v3.2.0 再增 6 个共 31 个，全部实测满 50 首含 audio）。
  *
  * 不进跨平台 fallback 候选（欧美曲库与中文流行无交集，匹配必是噪声）。
  */
@@ -34,7 +34,7 @@ class JamendoSource(
 
     private val api = "https://api.jamendo.com/v3.0"
 
-    /** 主题精选（tag 全部实测 ≥50 首有效，2026-08-05） */
+    /** 主题精选（tag 全部实测满 50 首含 audio：前 25 个 2026-08-07，v3.2.0 新增 6 个 2026-08-24；electronic/synthwave 实测为空已排除） */
     private val curatedPlaylists = listOf(
         "classical" to "古典精选",
         "piano" to "钢琴时光",
@@ -44,7 +44,29 @@ class JamendoSource(
         "soundtrack" to "影视原声",
         "chillout" to "弛放沙发",
         "hiphop" to "嘻哈节拍",
-        "instrumental" to "纯音乐"
+        "instrumental" to "纯音乐",
+        "rock" to "摇滚现场",
+        "pop" to "流行金曲",
+        "dance" to "劲舞派对",
+        "folk" to "民谣小屋",
+        "metal" to "金属狂潮",
+        "blues" to "蓝调酒馆",
+        "country" to "乡村公路",
+        "reggae" to "雷鬼海滩",
+        "punk" to "朋克车库",
+        "soul" to "灵魂之声",
+        "funk" to "放克律动",
+        "house" to "浩室俱乐部",
+        "trance" to "迷幻舞曲",
+        "lofi" to "Lo-Fi 角落",
+        "meditation" to "冥想静心",
+        "latin" to "拉丁风情",
+        "acoustic" to "原声木吉他",
+        "orchestral" to "管弦交响",
+        "epic" to "史诗战歌",
+        "techno" to "科技舞曲",
+        "smoothjazz" to "柔顺爵士",
+        "celtic" to "凯尔特民谣"
     ).map { (tag, name) ->
         Playlist(
             platform = platform,
@@ -83,14 +105,14 @@ class JamendoSource(
 
     override suspend fun getLyric(track: Track): LyricResult? = null
 
-    /** 推荐：两个官方热度榜 + 9 个主题精选（用户歌单已下线：spam/空/重复） */
+    /** 推荐：两个官方热度榜 + 主题精选（用户歌单已下线：spam/空/重复） */
     override suspend fun getRecommendedPlaylists(): List<Playlist> =
         listOf(
             Playlist(platform = platform, id = "chart:week", name = "Jamendo · 本周热门", trackCount = 50, description = "全球热度周榜", isTopList = true),
             Playlist(platform = platform, id = "chart:total", name = "Jamendo · 总热门榜", trackCount = 50, description = "全球热度总榜", isTopList = true)
         ) + curatedPlaylists
 
-    /** 广场 = 9 个主题精选；offset>0 返回空终止翻页（spam 用户歌单 v2.8 下线） */
+    /** 广场 = 主题精选；offset>0 返回空终止翻页（spam 用户歌单 v2.8 下线） */
     override suspend fun getPlaylistSquare(offset: Int): List<Playlist> =
         if (offset == 0) curatedPlaylists else emptyList()
 
@@ -120,17 +142,28 @@ class JamendoSource(
             }
         }
 
-    private fun fetchChartTracks(cid: String, order: String): List<Track> {
-        val body = get("$api/tracks/?client_id=$cid&format=json&limit=60&order=$order&include=musicinfo&audioformat=mp32")
-            ?: return emptyList()
-        return parseTracks(body).filter { it.hasAudio() }.distinctBy { it.id }.take(50)
-    }
+    private fun fetchChartTracks(cid: String, order: String): List<Track> =
+        fetchWithRetry("$api/tracks/?client_id=$cid&format=json&limit=60&order=$order&include=musicinfo&audioformat=mp32")
 
     private fun fetchTagTracks(cid: String, tag: String, fuzzy: Boolean): List<Track> {
         val param = if (fuzzy) "fuzzytags" else "tags"
-        val body = get("$api/tracks/?client_id=$cid&format=json&limit=50&order=popularity_total&$param=$tag&include=musicinfo&audioformat=mp32")
-            ?: return emptyList()
-        return parseTracks(body).filter { it.hasAudio() }.distinctBy { it.id }.take(50)
+        return fetchWithRetry("$api/tracks/?client_id=$cid&format=json&limit=50&order=popularity_total&$param=$tag&include=musicinfo&audioformat=mp32")
+    }
+
+    /**
+     * Jamendo 服务端不稳定：同一请求约 1/3 概率返回 200 success 但 results 为空
+     * （2026-08-06 连打 5 次实测 2 次空），空结果重试最多 3 次再放弃
+     */
+    private fun fetchWithRetry(url: String, maxAttempts: Int = 3): List<Track> {
+        repeat(maxAttempts) { attempt ->
+            val body = get(url)
+            if (body != null) {
+                val tracks = parseTracks(body).filter { it.hasAudio() }.distinctBy { it.id }.take(50)
+                if (tracks.isNotEmpty()) return tracks
+            }
+            if (attempt < maxAttempts - 1) Thread.sleep(800)
+        }
+        return emptyList()
     }
 
     private fun Track.hasAudio(): Boolean = extra["audio"]?.startsWith("http") == true
