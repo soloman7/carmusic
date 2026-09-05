@@ -8,12 +8,14 @@ import com.carmusic.drive.DrivingDetector
 import com.carmusic.playback.PlayerManager
 import com.carmusic.source.SourceManager
 import com.carmusic.source.model.Track
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 class SearchViewModel(
@@ -64,12 +66,15 @@ class SearchViewModel(
                 sourceManager.searchAllStream(k, enabledPlatforms.value).collect { merged ->
                     _results.value = merged
                 }
+            } catch (e: CancellationException) {
+                throw e   // 旧搜索被新搜索取消属正常流程，不能吞成"搜索失败"
             } catch (e: Exception) {
                 Log.e(TAG, "search failed: $k", e)
                 _results.value = emptyList()
                 _error.value = "搜索失败，请检查网络后重试"
             } finally {
-                _isSearching.value = false
+                // 只有自己正常结束才置 false；被取消时不动它，避免冲掉新 job 的状态
+                if (coroutineContext.isActive) _isSearching.value = false
             }
         }
     }

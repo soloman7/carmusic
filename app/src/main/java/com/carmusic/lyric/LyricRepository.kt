@@ -38,12 +38,23 @@ class LyricRepository(
                 }
                 // 过期：视为 miss，继续走网络
             }
-            val result = runCatching { sourceManager.getLyric(track) }.getOrNull()
+            // 网络故障（SourceUnavailableException）≠ 无歌词：
+            // 保留旧缓存（哪怕已过期），本次返回旧值或 null，绝不用负缓存覆盖好数据
+            val result = try {
+                sourceManager.getLyric(track)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: com.carmusic.source.SourceUnavailableException) {
+                Log.w("LyricRepository", "getLyric network failed for ${track.trackId}, keep old cache")
+                return@withContext cached
+                    ?.takeIf { it.lrc.isNotBlank() }
+                    ?.let { LyricResult(lrc = it.lrc, tlyric = it.tlyric) }
+            }
             runCatching {
                 lyricDao.insert(
                     LyricEntity(
                         trackId = track.trackId,
-                        lrc = result?.lrc ?: "",   // null/无歌词 → 负缓存
+                        lrc = result?.lrc ?: "",   // 平台确认无歌词 → 才写负缓存
                         tlyric = result?.tlyric
                     )
                 )

@@ -16,6 +16,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.kotlin.any
 import org.mockito.kotlin.doReturn
+import org.mockito.kotlin.doThrow
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
 import org.mockito.kotlin.times
@@ -94,6 +95,41 @@ class LyricRepositoryTest {
         assertEquals(lyric, second)
 
         verifyBlocking(sourceManager, times(1)) { getLyric(any()) }
+    }
+
+    @Test
+    fun `network failure keeps old cache instead of overwriting with negative cache`() = runTest {
+        // 先有 30 天前的正缓存（已过期），随后网络故障 → 旧歌词必须保留
+        db.lyricDao().insert(
+            LyricEntity(
+                trackId = track.trackId,
+                lrc = "[00:00.00]旧歌词",
+                tlyric = null,
+                cachedAt = System.currentTimeMillis() - 40L * 24 * 60 * 60 * 1000
+            )
+        )
+        sourceManager = mock {
+            onBlocking { getLyric(any()) } doThrow com.carmusic.source.SourceUnavailableException("timeout")
+        }
+        repository = LyricRepository(db.lyricDao(), sourceManager)
+
+        val result = repository.getLyric(track)
+
+        assertEquals("[00:00.00]旧歌词", result?.lrc)
+        // 旧缓存未被空值覆盖
+        assertEquals("[00:00.00]旧歌词", db.lyricDao().get(track.trackId)?.lrc)
+    }
+
+    @Test
+    fun `network failure without any cache returns null and writes no negative cache`() = runTest {
+        sourceManager = mock {
+            onBlocking { getLyric(any()) } doThrow com.carmusic.source.SourceUnavailableException("timeout")
+        }
+        repository = LyricRepository(db.lyricDao(), sourceManager)
+
+        assertNull(repository.getLyric(track))
+        // 一次断网不能把"无歌词"写进负缓存
+        assertNull(db.lyricDao().get(track.trackId))
     }
 
     @Test

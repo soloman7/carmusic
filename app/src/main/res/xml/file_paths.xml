@@ -2,6 +2,7 @@
 <!-- v3.2 自动更新：下载的 APK 经 FileProvider 授权给系统安装器。
      v3.3 起 APK 移到 filesDir/updates（cacheDir 会被系统回收），cache-path 保留兼容旧残留。 -->
 <paths>
+    <!-- name 不能重复：FileProvider 按 name 建 map，同名静默覆盖（v3.3 曾因此安装必失败） -->
     <files-path name="updates" path="updates/" />
-    <cache-path name="updates" path="updates/" />
+    <cache-path name="updates-cache" path="updates/" />
 </paths>

@@ -40,7 +40,14 @@ class MainActivity : ComponentActivity() {
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { /* 拒绝也能用基础功能 */ }
+    ) { grants ->
+        // 首次安装用户授权后立即启动驾驶检测：
+        // onCreate 里的 start() 在权限到位前调用会被忽略，这里不补就永远不启动
+        if (grants[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
+            container.drivingDetector.start()
+        }
+        // 拒绝也能用基础功能
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -50,8 +57,11 @@ class MainActivity : ComponentActivity() {
 
         requestNecessaryPermissions()
 
-        // 启动 GPS 驾驶检测
+        // 启动 GPS 驾驶检测（无权限时内部忽略，授权回调里会再调）
         container.drivingDetector.start()
+
+        // 进程存活场景（DiLink 杀 Activity 留进程）重进 App：重连 MediaController
+        container.playerManager.ensureConnected()
 
         setContent {
             CarMusicTheme {
@@ -89,7 +99,9 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
         if (isFinishing) {
             container.drivingDetector.stop()
-            container.playerManager.release()
+            // 只断开 MediaController 连接，绝不 release 进程级单例
+            // （scope 一旦取消，重进 App 后所有播放操作静默失效，直到系统杀进程）
+            container.playerManager.disconnect()
         }
     }
 }

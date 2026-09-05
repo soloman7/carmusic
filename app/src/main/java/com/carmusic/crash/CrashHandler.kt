@@ -41,13 +41,18 @@ object CrashHandler {
                     appendLine()
                     appendLine(sw.toString())
                 })
-                // 只保留最近 MAX_FILES 个
-                dir.listFiles()?.sortedBy { it.lastModified() }
-                    ?.dropLast(MAX_FILES)
-                    ?.forEach { it.delete() }
+                // 只保留最近 MAX_FILES 个（先写的新文件在后，drop 掉前面的旧文件）
+                pruneCrashFiles(dir.listFiles()?.toList() ?: emptyList())
             }
             prev?.uncaughtException(t, e) ?: android.os.Process.killProcess(android.os.Process.myPid())
         }
+    }
+
+    /** 保留最新 [maxFiles] 个崩溃日志（含刚写入的），删除其余。 */
+    internal fun pruneCrashFiles(files: List<File>, maxFiles: Int = MAX_FILES) {
+        files.sortedByDescending { it.lastModified() }
+            .drop(maxFiles)
+            .forEach { it.delete() }
     }
 
     fun crashDir(context: Context): File =

@@ -463,8 +463,17 @@ fun SettingsScreen(
                 Spacer(modifier = Modifier.height(8.dp))
                 Text("v${s.info.versionName} 已下载完成", color = Color.White, style = MaterialTheme.typography.bodyMedium)
                 Spacer(modifier = Modifier.height(8.dp))
+                // LocalContext 必须在 @Composable 上下文取，onClick lambda 里取会编译失败
+                val installCtx = androidx.compose.ui.platform.LocalContext.current
                 Button(
-                    onClick = { vm.installUpdate(s.apk) },
+                    onClick = {
+                        if (!vm.installUpdate(s.apk)) {
+                            // 返回 false = 已跳系统"安装未知应用"授权页，回来要再点一次
+                            android.widget.Toast.makeText(
+                                installCtx, "请先允许安装，然后返回再点一次", android.widget.Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    },
                     colors = ButtonDefaults.buttonColors(containerColor = CarPrimary)
                 ) { Text("立即安装", color = Color.Black) }
             }

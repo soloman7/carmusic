@@ -18,4 +18,7 @@ archive/
 .idea/
 *.iml
 
+# Python
+__pycache__/
+
 # 注意：app/schemas/ 不忽略，Room schema 需入库

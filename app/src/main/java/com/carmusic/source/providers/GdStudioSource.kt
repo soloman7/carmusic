@@ -67,6 +67,8 @@ class GdStudioSource(client: OkHttpClient) {
                 expireAt = System.currentTimeMillis() + 60 * 60 * 1000,  // 1 小时
                 quality = "320k"
             )
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e   // 切歌取消是正常流程，绝不能计入熔断器（3 次切歌就误熔断 10 分钟）
         } catch (e: Exception) {
             onFailure()
             null
@@ -81,7 +83,8 @@ class GdStudioSource(client: OkHttpClient) {
         val arr = runCatching { JsonParser.parseString(body).asJsonArray }.getOrNull() ?: return null
         val want = norm(wantTitle)
         for (el in arr) {
-            val o = el.asJsonObject
+            // 公共实例响应可能混入非对象元素，逐元素隔离，坏一条跳一条而不是计入熔断
+            val o = runCatching { el.asJsonObject }.getOrNull() ?: continue
             val name = o.get("name")?.takeIf { !it.isJsonNull }?.asString ?: continue
             if (norm(name) != want) continue
             val id = o.get("id")?.takeIf { !it.isJsonNull }?.asString ?: continue

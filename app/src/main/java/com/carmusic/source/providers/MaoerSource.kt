@@ -11,11 +11,13 @@ import okhttp3.OkHttpClient
 import java.net.URLEncoder
 
 /**
- * 猫耳FM（missevan）- 广播剧/有声书/声音（2026-08-03 实测：搜索+取流均无签名）
+ * 猫耳FM（missevan）- 广播剧/有声书/声音
  *
  * - 搜索：/sound/getsearch（type=3 声音）
  * - 取流：/sound/getsound → soundurl（HLS m3u8，ExoPlayer 自动识别）
  * - 时长单位毫秒；pay_type 付费剧集可能只给试听，播不了时按正常失败处理
+ * - v3.4：getsound 已上阿里云 WAF（2026-09 实测），无 Referer 请求被 JS 挑战页拦截
+ *   （返回 text/html，getJson 解析失败 → 取流全挂）。所有请求必须带站内 Referer。
  *
  * 不进跨平台 fallback 候选（时长与歌曲匹配会误伤），只在搜索结果出现。
  */
@@ -24,12 +26,18 @@ class MaoerSource(private val client: OkHttpClient) : MusicSource {
     override val platform = "maoer"
     override val displayName = "猫耳FM"
 
+    /** WAF 校验 Referer：缺失时 getsound 返回 aliyun_waf JS 挑战 HTML 而非 JSON */
+    private val headers = mapOf(
+        "User-Agent" to CHROME_UA,
+        "Referer" to "https://www.missevan.com/"
+    )
+
     override suspend fun search(keyword: String, page: Int, limit: Int): List<Track> =
         withContext(Dispatchers.IO) {
             val url = "https://www.missevan.com/sound/getsearch" +
                 "?s=${URLEncoder.encode(keyword, "UTF-8")}&p=$page&type=3&page_size=$limit"
 
-            val json = client.getJson(url, mapOf("User-Agent" to CHROME_UA))
+            val json = client.getJson(url, headers)
                 ?: return@withContext emptyList()
             val datas = json.getAsJsonObject("info")?.getAsJsonArray("Datas")
                 ?: return@withContext emptyList()
@@ -58,7 +66,7 @@ class MaoerSource(private val client: OkHttpClient) : MusicSource {
     override suspend fun getMediaSource(track: Track, quality: String): MediaSource? =
         withContext(Dispatchers.IO) {
             val url = "https://www.missevan.com/sound/getsound?soundid=${track.id}"
-            val json = client.getJson(url, mapOf("User-Agent" to CHROME_UA))
+            val json = client.getJson(url, headers)
                 ?: return@withContext null
             val soundUrl = json.getAsJsonObject("info")?.getAsJsonObject("sound")
                 ?.get("soundurl")?.asString

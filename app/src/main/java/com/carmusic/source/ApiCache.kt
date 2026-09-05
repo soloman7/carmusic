@@ -5,11 +5,13 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
 
-/** 应用层内存缓存：搜索结果 5 分钟 TTL */
+/** 应用层内存缓存：搜索结果 5 分钟 TTL、歌单 30 分钟 TTL。
+ *  铁律：block 抛异常 = 本轮结果不可信，绝不写缓存（失败 ≠ 无结果）。 */
 object ApiCache {
     private data class Entry(val data: Any, val expiresAt: Long)
 
-    private val cache = LruCache<String, Entry>(64)
+    // 256：fallback 搜索的 "search:标题 歌手:" 键会持续写缓存，64 容量会被挤爆正常键
+    private val cache = LruCache<String, Entry>(256)
 
     /** per-key 锁：同一 key 的并发 miss 只发一次请求（原来锁内查、锁外算会重复请求） */
     private val locks = ConcurrentHashMap<String, Mutex>()
@@ -20,6 +22,8 @@ object ApiCache {
         val result = keyMutex.withLock {
             cache.get(key)?.takeIf { it.expiresAt > System.currentTimeMillis() }
                 ?.let { return@withLock it.data as T }
+            // block 抛异常时直接上抛、跳过 cache.put：调用方看到"本轮失败可重试"，
+            // 而不是 5~30 分钟内一直命中假"空结果"缓存
             val v = block()
             cache.put(key, Entry(v as Any, System.currentTimeMillis() + ttlMs))
             v

@@ -5,12 +5,12 @@ import com.carmusic.source.providers.QQSource
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import org.junit.Assert.assertTrue
-import org.junit.Ignore
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.util.concurrent.TimeUnit
 
 /**
- * 新链路真实网络实测（手动验证工具，默认 @Ignore）。
+ * 新链路真实网络实测（默认跳过，`gradlew testDebugUnitTest -PintegrationTests` 时执行）。
  * 覆盖 v2.4 复刻 Listen 1 的每条链路：广场列表 → 歌单曲目 → 播放地址。
  * 网易链路用 scripts/test_netease_weapi.py 验证（crypto 依赖 android.util.Base64，JVM 跑不了）。
  */
@@ -21,9 +21,12 @@ class SourceRealApiTest {
         .readTimeout(20, TimeUnit.SECONDS)
         .build()
 
+    private fun requireIntegration() =
+        assumeTrue("需要 -PintegrationTests 才执行真实网络测试", System.getProperty("carmusic.integrationTests") == "true")
+
     @Test
-    @Ignore("手动实测工具：去掉 @Ignore 后运行")
     fun qqSquareAndDissTracks() = runBlocking {
+        requireIntegration()
         val qq = QQSource(client)
         val square = qq.getPlaylistSquare(0)
         println("=== QQ 广场 ${square.size} 个歌单 ===")
@@ -37,8 +40,8 @@ class SourceRealApiTest {
     }
 
     @Test
-    @Ignore("手动实测工具：去掉 @Ignore 后运行")
     fun miguFullChain() = runBlocking {
+        requireIntegration()
         val migu = MiguSource(client)
         val square = migu.getPlaylistSquare(0)
         println("=== 咪咕广场 ${square.size} 个歌单 ===")

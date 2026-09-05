@@ -82,6 +82,12 @@ class UpdateManager(
         if (!force && !settings.autoUpdateCheck.first()) return
 
         _state.value = UpdateState.Checking
+        // 更新链路是唯一的"软件来源"，version.json 明文可被中间人替换成"永远没有新版本"
+        if (!url.startsWith("https://")) {
+            Log.w(TAG, "update url must be https: $url")
+            _state.value = UpdateState.Error("更新地址必须为 https")
+            return
+        }
         val json = runCatching { okHttpClient.getJson(url) }.getOrNull()
         if (json == null) {
             _state.value = UpdateState.Error("检查更新失败：无法读取更新信息")
@@ -98,6 +104,10 @@ class UpdateManager(
         }.getOrNull()
         if (info == null || info.apkUrl.isEmpty()) {
             _state.value = UpdateState.Error("检查更新失败：更新信息格式错误")
+            return
+        }
+        if (!info.apkUrl.startsWith("https://")) {
+            _state.value = UpdateState.Error("APK 下载地址必须为 https")
             return
         }
         _state.value = if (info.versionCode > BuildConfig.VERSION_CODE) {
@@ -147,6 +157,8 @@ class UpdateManager(
             _state.value = UpdateState.Ready(info, file)
         }.onFailure { e ->
             Log.w(TAG, "download failed: ${e.message}")
+            // 半截包必须清掉：留着下次"待安装"点上去就是废纸，还占 filesDir
+            File(updateDir, "carmusic-v${info.versionName}.apk").delete()
             _state.value = UpdateState.Error(e.message ?: "下载失败")
         }.also { downloadCall = null }
     }
@@ -176,7 +188,9 @@ class UpdateManager(
             return false
         }
         val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.fileprovider", apk)
-        val intent = Intent(Intent.ACTION_VIEW).apply {
+        val intent = Intent(android.content.Intent.ACTION_INSTALL_PACKAGE).apply {
+            // ACTION_INSTALL_PACKAGE 走系统包安装器标准路径（ACTION_VIEW 依赖文件管理器对
+            // application/vnd.android.package-archive 的处理，车机上不一定有）
             setDataAndType(uri, "application/vnd.android.package-archive")
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)

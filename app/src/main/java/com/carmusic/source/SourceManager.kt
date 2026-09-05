@@ -24,6 +24,13 @@ import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 
 /**
+ * 原平台网络故障（超时/DNS/HTTP 异常）——与"确认无源"（getMediaSource 返回 null）区分。
+ * 上层捕获后应提示重试，而不是触发跨平台 fallback 风暴。
+ * 继承 RuntimeException：mockito 无法为未声明受检异常的 suspend 方法 stub 受检异常（单测需要）。
+ */
+class SourceUnavailableException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
+
+/**
  * 音源聚合管理：7 平台并发搜索、播放失败自动 fallback
  */
 class SourceManager(okHttpClient: OkHttpClient, private val settingsRepository: com.carmusic.data.SettingsRepository) {
@@ -54,17 +61,22 @@ class SourceManager(okHttpClient: OkHttpClient, private val settingsRepository: 
     /**
      * 并发搜索启用平台，结果合并返回（带平台标识）。
      * 跨平台按 标题+主歌手 去重，优先保留偏好序靠前的平台。
-     * 搜索结果走 ApiCache 5 分钟内存缓存。
+     * 搜索结果走 ApiCache 5 分钟内存缓存；全平台都网络失败时上抛不缓存（失败 ≠ 无结果）。
      */
     suspend fun searchAll(keyword: String, enabledPlatforms: Set<String>? = null): List<Track> =
-        ApiCache.getOrPut("search:$keyword:${enabledPlatforms?.sorted()?.joinToString(",")}") {
+        ApiCache.getOrPut(searchKey(keyword, enabledPlatforms)) {
             coroutineScope {
                 val filtered = enabledPlatforms?.let { en -> sources.filter { it.platform in en } }
                     ?: sources
+                var answered = 0
                 val deferreds = filtered.map { source ->
                     async {
                         try {
-                            source.search(keyword, page = 1, limit = 15)
+                            val r = source.search(keyword, page = 1, limit = 15)
+                            answered++
+                            r
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
                         } catch (e: Exception) {
                             Log.w(TAG, "search failed for ${source.platform}: ${e.message}")
                             emptyList()
@@ -72,6 +84,10 @@ class SourceManager(okHttpClient: OkHttpClient, private val settingsRepository: 
                     }
                 }
                 val merged = deferreds.flatMap { it.await() }
+                // 全部源都没应答（断网/全超时）≠ 真无结果：上抛让 ApiCache 跳过缓存
+                if (answered == 0 && filtered.isNotEmpty()) {
+                    throw SourceUnavailableException("search [$keyword]: all ${filtered.size} sources failed")
+                }
                 mergeSorted(merged, emptyList())
             }
         }
@@ -83,7 +99,7 @@ class SourceManager(okHttpClient: OkHttpClient, private val settingsRepository: 
      */
     fun searchAllStream(keyword: String, enabledPlatforms: Set<String>? = null): Flow<List<Track>> =
         channelFlow {
-            val key = "search:$keyword:${enabledPlatforms?.sorted()?.joinToString(",")}"
+            val key = searchKey(keyword, enabledPlatforms)
             ApiCache.peekFresh(key)?.let { send(it as List<Track>); return@channelFlow }
             val filtered = enabledPlatforms?.let { en -> sources.filter { it.platform in en } }
                 ?: sources
@@ -125,18 +141,23 @@ class SourceManager(okHttpClient: OkHttpClient, private val settingsRepository: 
 
     /**
      * 获取播放 URL。
-     * 先尝试原平台；若失败，自动 fallback 到其他平台搜索同名歌曲。
+     * 原平台返回 null（确认无源）→ 跨平台 fallback；原平台网络异常 → 抛 [SourceUnavailableException]，
+     * 不触发 7 平台 fallback 风暴（网络故障时其他平台大概率同样不可达）。
      */
     suspend fun getMediaSource(track: Track): MediaSource? {
         // 先试原平台
         val origin = sources.find { it.platform == track.platform }
         if (origin != null) {
-            try {
-                val src = origin.getMediaSource(track)
-                if (src != null && !src.isExpired()) return src
+            val src = try {
+                origin.getMediaSource(track)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.w(TAG, "getMediaSource failed for ${track.platform}: ${e.message}")
+                throw SourceUnavailableException("origin ${track.platform} failed: ${e.message}", e)
             }
+            if (src != null && !src.isExpired()) return src
+            // src == null：原平台确认无源（非网络故障）→ 继续 fallback
         }
 
         // fallback：在其他平台搜同名歌曲（标题去括号归一化 + 主歌手校验，最多试 3 个候选）
@@ -181,15 +202,18 @@ class SourceManager(okHttpClient: OkHttpClient, private val settingsRepository: 
     }
 
     /**
-     * 获取歌词
+     * 获取歌词。null = 平台确认无歌词；网络故障抛 [SourceUnavailableException]，
+     * 让 LyricRepository 保住旧缓存不被负缓存覆盖。
      */
     suspend fun getLyric(track: Track): LyricResult? {
         val source = sources.find { it.platform == track.platform } ?: return null
         return try {
             source.getLyric(track)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "getLyric failed for ${track.platform}: ${e.message}")
-            null
+            throw SourceUnavailableException("getLyric ${track.platform} failed: ${e.message}", e)
         }
     }
 
@@ -224,18 +248,25 @@ class SourceManager(okHttpClient: OkHttpClient, private val settingsRepository: 
      * 按平台隔离缓存（30 分钟），单平台失败只影响自己的分区。
      * 榜单（QQ/酷狗/酷我热歌榜）排在网易云推荐前面。
      * v3.2：过滤 ContentCleaner 每周验证出的无效歌单黑名单（缓存放原始列表，返回前过滤）。
+     * v3.4：includeInvalid=true 返回未过滤全量——清理器要重新探测黑名单成员，
+     * 否则黑名单歌单永远探不到、隔周被"整体覆盖"放出来（振荡 bug）。
      */
-    suspend fun getRecommendedPlaylists(): List<Playlist> = coroutineScope {
+    suspend fun getRecommendedPlaylists(includeInvalid: Boolean = false): List<Playlist> = coroutineScope {
         val merged = sources.map { source ->
             async {
-                ApiCache.getOrPut("playlists:${source.platform}", ttlMs = 30 * 60_000) {
-                    runCatching { source.getRecommendedPlaylists() }
-                        .onFailure { Log.w(TAG, "playlists failed for ${source.platform}: ${it.message}") }
-                        .getOrDefault(emptyList())
-                }
+                // runCatching 在缓存 block 之外：平台失败只影响自己本轮缺席，绝不缓存空分区
+                runCatching {
+                    ApiCache.getOrPut("playlists:${source.platform}", ttlMs = 30 * 60_000) {
+                        source.getRecommendedPlaylists()
+                    }
+                }.onFailure { e ->
+                    if (e !is kotlinx.coroutines.CancellationException) {
+                        Log.w(TAG, "playlists failed for ${source.platform}: ${e.message}")
+                    }
+                }.getOrDefault(emptyList())
             }
         }.flatMap { it.await() }
-        val invalid = settingsRepository.invalidPlaylists.first()
+        val invalid = if (includeInvalid) emptySet() else settingsRepository.invalidPlaylists.first()
         merged.filter { it.playlistId !in invalid }
             .sortedBy { if (it.isTopList) 0 else 1 }
     }
@@ -247,11 +278,17 @@ class SourceManager(okHttpClient: OkHttpClient, private val settingsRepository: 
      */
     suspend fun getPlaylistTracks(playlist: Playlist): List<Track> {
         val source = sources.find { it.platform == playlist.platform } ?: return emptyList()
-        return ApiCache.getOrPut("playlist:${playlist.playlistId}", ttlMs = 30 * 60_000) {
-            runCatching { source.getPlaylistTracks(playlist) }
-                .onFailure { Log.w(TAG, "playlist tracks failed for ${playlist.playlistId}: ${it.message}") }
-                .getOrDefault(emptyList())
-        }.filter { it.extra["grey"] != "1" }
+        // 失败上抛 → ApiCache 不写缓存 → 30 分钟"空歌单"假象不可能出现
+        val tracks = runCatching {
+            ApiCache.getOrPut("playlist:${playlist.playlistId}", ttlMs = 30 * 60_000) {
+                source.getPlaylistTracks(playlist)
+            }
+        }.getOrElse { e ->
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            Log.w(TAG, "playlist tracks failed for ${playlist.playlistId}: ${e.message}")
+            return emptyList()
+        }
+        return tracks.filter { it.extra["grey"] != "1" }
     }
 
     /**
@@ -260,10 +297,14 @@ class SourceManager(okHttpClient: OkHttpClient, private val settingsRepository: 
      */
     suspend fun getPlaylistSquare(platform: String, offset: Int): List<Playlist> {
         val source = sources.find { it.platform == platform } ?: return emptyList()
-        return ApiCache.getOrPut("square:$platform:$offset", ttlMs = 5 * 60_000) {
-            runCatching { source.getPlaylistSquare(offset) }
-                .onFailure { Log.w(TAG, "square failed for $platform@$offset: ${it.message}") }
-                .getOrDefault(emptyList())
+        return runCatching {
+            ApiCache.getOrPut("square:$platform:$offset", ttlMs = 5 * 60_000) {
+                source.getPlaylistSquare(offset)
+            }
+        }.getOrElse { e ->
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            Log.w(TAG, "square failed for $platform@$offset: ${e.message}")
+            emptyList()
         }
     }
 
@@ -272,6 +313,19 @@ class SourceManager(okHttpClient: OkHttpClient, private val settingsRepository: 
 
         /** 流式搜索单源超时：慢源掉队不拖累整体上屏 */
         private const val SOURCE_TIMEOUT_MS = 8_000L
+
+        /**
+         * 搜索缓存 key。null（全平台）与空集必须区分开，否则空集请求会
+         * 与全平台共用一条缓存互相污染（v3.4 修复）。
+         */
+        internal fun searchKey(keyword: String, enabledPlatforms: Set<String>?): String {
+            val tag = when {
+                enabledPlatforms == null -> "all"
+                enabledPlatforms.isEmpty() -> "none"
+                else -> enabledPlatforms.sorted().joinToString(",")
+            }
+            return "search:$keyword:$tag"
+        }
 
         /** 标题归一化：小写、去【】/()（）内容、去空白（"xx（现场版）"≈"xx"，可用性优先） */
         private fun norm(s: String): String = s.lowercase()

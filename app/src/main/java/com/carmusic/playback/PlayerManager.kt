@@ -122,9 +122,12 @@ class PlayerManager(
     )
 
     // 下一首 URL 预加载（不触发跨平台 fallback，避免放大请求量）
-    private val preloadedSources = object : LinkedHashMap<String, MediaSource>(5, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, MediaSource>?) = size > 5
-    }
+    // IO 线程（preload）写 + Main 线程读删，必须同步包装（同 trackRegistry）
+    private val preloadedSources = java.util.Collections.synchronizedMap(
+        object : LinkedHashMap<String, MediaSource>(5, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, MediaSource>?) = size > 5
+        }
+    )
     private var preloadJob: Job? = null
 
     init {
@@ -154,15 +157,25 @@ class PlayerManager(
     }
 
     private fun connect() {
+        // 幂等：已连接或正在连接时跳过（Activity 重建/重进时经 ensureConnected() 反复调用）
+        if (controller != null || controllerFuture != null) return
         val sessionToken = SessionToken(
             appContext,
             ComponentName(appContext, PlaybackService::class.java)
         )
         controllerFuture = MediaController.Builder(appContext, sessionToken).buildAsync()
         controllerFuture?.addListener({
-            controller = controllerFuture?.get()
-            controller?.addListener(playerListener)
-            controller?.repeatMode = exoRepeatMode(_playMode.value)
+            // future 可能以异常完成（服务绑定失败/车机省电限制）：
+            // 清掉 future 允许下次重连，绝不能让异常逃出 directExecutor 崩进程
+            val c = controllerFuture?.let { runCatching { it.get() }.getOrNull() }
+            if (c == null) {
+                Log.e(TAG, "MediaController connect failed, will retry on next ensureConnected()")
+                controllerFuture = null
+                return@addListener
+            }
+            controller = c
+            c.addListener(playerListener)
+            c.repeatMode = exoRepeatMode(_playMode.value)
             // 补播连接完成前点击的歌曲
             pendingPlay?.let { pendingPlay = null; play(it) }
         }, MoreExecutors.directExecutor())
@@ -275,6 +288,9 @@ class PlayerManager(
             retryJob?.cancel()
             retryJob = scope.launch {
                 delay(1000L * retryCount)  // 线性退避 1s / 2s
+                // 用户已切歌（next/previous）则本次重签作废：
+                // 旧曲目的 refreshAndRetry 会 cancel 当前会话的 playAllJob，炸掉 phase2 补缺
+                if (_currentTrack.value?.trackId != track.trackId) return@launch
                 refreshAndRetry(track)
             }
         }
@@ -302,26 +318,40 @@ class PlayerManager(
             // 优先用预加载的 URL
             val mediaSource = preloadedSources.remove(track.trackId)
                 ?.takeIf { !it.isExpired() }
-                ?: runCatching { sourceManager.getMediaSource(track) }.getOrNull()
             if (mediaSource == null) {
-                _error.value = "无法播放：所有平台均无此歌曲的播放源"
+                val resolved = try {
+                    sourceManager.getMediaSource(track)
+                } catch (e: com.carmusic.source.SourceUnavailableException) {
+                    // 原平台网络故障：提示重试，而不是误报"全平台无此歌曲"
+                    _error.value = "网络异常，请稍后重试"
+                    return@launch
+                }
+                if (resolved == null) {
+                    _error.value = "无法播放：所有平台均无此歌曲的播放源"
+                    return@launch
+                }
+                setAndPlay(track, resolved, addToQueue)
                 return@launch
             }
+            setAndPlay(track, mediaSource, addToQueue)
+        }
+    }
 
-            val mediaItem = buildMediaItem(track, mediaSource)
-            val player = controller ?: return@launch
-
-            if (addToQueue) {
-                runCatching { player.addMediaItem(mediaItem) }
-                _queue.value = _queue.value + track
-            } else {
-                runCatching {
-                    player.setMediaItem(mediaItem)
-                    player.prepare()
-                    player.play()
-                }.onFailure { _error.value = "播放启动失败：${it.message}" }
-                _queue.value = listOf(track)
-            }
+    /** 已拿到可用音源：构建 MediaItem 落入播放器。timeline 为空且是"加入队列"时降级为单曲播放，
+     *  避免"恢复快照未消费"状态下 1 首入空 timeline 而 _queue 记 N+1 的错位（会污染存档）。 */
+    private fun setAndPlay(track: Track, mediaSource: MediaSource, addToQueue: Boolean) {
+        val mediaItem = buildMediaItem(track, mediaSource)
+        val player = controller ?: return
+        if (addToQueue && player.mediaItemCount > 0) {
+            runCatching { player.addMediaItem(mediaItem) }
+            _queue.value = _queue.value + track
+        } else {
+            runCatching {
+                player.setMediaItem(mediaItem)
+                player.prepare()
+                player.play()
+            }.onFailure { _error.value = "播放启动失败：${it.message}" }
+            _queue.value = listOf(track)
         }
     }
 
@@ -482,6 +512,8 @@ class PlayerManager(
     /** @param playerOverride controller 未连接时由 PlaybackService 传入 ExoPlayer 直连 */
     fun nextOn(playerOverride: Player?) {
         val c = playerOverride ?: controller ?: return
+        // 切歌即放弃待执行的重签，防止旧曲目 retry 炸掉当前会话的 phase2
+        retryJob?.cancel()
         // 杀进程后方向盘按键直接恢复上次会话（车机常见：上车先按下一首）
         if (c.mediaItemCount == 0) {
             restoredSnapshot?.let { resumeRestored(it); return }
@@ -494,6 +526,7 @@ class PlayerManager(
 
     fun previousOn(playerOverride: Player?) {
         val c = playerOverride ?: controller ?: return
+        retryJob?.cancel()
         if (c.mediaItemCount == 0) {
             restoredSnapshot?.let { resumeRestored(it); return }
         }
@@ -644,15 +677,22 @@ class PlayerManager(
         scope.launch { runCatching { database.playbackStateDao().upsert(entity) } }
     }
 
-    fun release() {
-        retryJob?.cancel()
-        preloadJob?.cancel()
-        playAllJob?.cancel()
+    /**
+     * Activity finish 时调用：只断开 UI 侧 MediaController 连接。
+     * 进程级单例必须保持可用（DiLink 杀 Activity 留进程是常态）：
+     * 不 cancel scope 与进行中的 job（后台播放/重试/phase2 继续走完，
+     * 对已释放 controller 的调用均有 runCatching 包裹或 controller==null 短路），
+     * 下次 MainActivity onCreate 经 [ensureConnected] 重连。
+     */
+    fun disconnect() {
         controller?.removeListener(playerListener)
-        controllerFuture?.let { MediaController.releaseFuture(it) }
         controller = null
-        scope.cancel()   // 同时终止 startPositionUpdater 的 while(isActive)
+        controllerFuture?.let { runCatching { MediaController.releaseFuture(it) } }
+        controllerFuture = null
     }
+
+    /** 重进 App 时重连 controller（幂等，已在连接中则跳过）。 */
+    fun ensureConnected() = connect()
 
     companion object {
         private const val TAG = "PlayerManager"

@@ -22,8 +22,8 @@ android {
         applicationId = "com.carmusic"
         minSdk = 26
         targetSdk = 35
-        versionCode = 20
-        versionName = "3.3.0"
+        versionCode = 21
+        versionName = "3.4.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -70,6 +70,21 @@ android {
     kotlin {
         compilerOptions {
             jvmTarget.set(JvmTarget.JVM_17)
+        }
+    }
+
+    testOptions {
+        unitTests {
+            // 被测代码路径里的 android.util.Log 调用在 JVM 单测中默认抛异常，
+            // 改为静默返回默认值（与 mockito 相关配置解耦）
+            isReturnDefaultValues = true
+            all {
+                // 发版前真实网络门禁：gradlew testDebugUnitTest -PintegrationTests
+                it.systemProperty(
+                    "carmusic.integrationTests",
+                    if (project.hasProperty("integrationTests")) "true" else "false"
+                )
+            }
         }
     }
 

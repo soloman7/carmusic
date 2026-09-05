@@ -12,8 +12,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -25,7 +27,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  *    连续两个清理周期（约 14 天）都拿不到播放地址才删除——首轮失败只进 DataStore 挂账，
  *    中间恢复播放自动出账。车库弱网/平台抖动的"探测失败"不再等于死链。
  * 2. 无效歌单：推荐歌单逐个拉曲目，拉取失败或可播曲目为 0 的进 DataStore 黑名单
- *    （invalid_playlists，覆盖式写入——下周期重新验证，恢复即自动移出）。
+ *    （invalid_playlists，合并写入；黑名单成员每轮仍被重新探测，恢复即自动移出）。
  * 3. 过期歌词：LyricDao.deleteOlderThan(30 天)。
  *
  * 安全阀：
@@ -52,42 +54,53 @@ class ContentCleaner(
     private val _state = MutableStateFlow<CleanState>(CleanState.Idle)
     val state: StateFlow<CleanState> = _state.asStateFlow()
 
+    /** 重入互斥：启动自动清理与设置页手动触发并发时，挂账集合互相覆盖会破坏两周期确认 */
+    private val runMutex = Mutex()
+
     /** 距上次清理满 7 天（或从未清理）且开关打开时执行；force=true 无条件执行 */
     suspend fun runIfDue(force: Boolean = false) {
-        if (_state.value is CleanState.Running) return
-        if (!force) {
-            if (!settings.autoClean.first()) return
-            val last = settings.lastCleanupAt.first()
-            if (System.currentTimeMillis() - last < WEEK_MS) return
-        }
-        _state.value = CleanState.Running
-        runCatching {
-            // 哨兵不过 = 网络死，全部探测结果不可信。静默轮空（force 手动触发时给出反馈），
-            // 不更新 lastCleanupAt，让下个启动窗口重试。
-            if (!sourceManager.ping()) {
-                Log.w(TAG, "cleanup skipped: connectivity sentinel failed")
-                _state.value = if (force) {
-                    CleanState.Error("网络不可用，本次未清理")
-                } else {
-                    CleanState.Idle
-                }
-                return
+        // 原子占位：拿到锁的才清理，其余直接返回（check-then-act 不能拆开）
+        if (!runMutex.tryLock()) return
+        try {
+            if (_state.value is CleanState.Running) return
+            if (!force) {
+                if (!settings.autoClean.first()) return
+                val last = settings.lastCleanupAt.first()
+                if (System.currentTimeMillis() - last < WEEK_MS) return
             }
-            val removed = cleanDeadTracks()
-            val invalid = cleanInvalidPlaylists()
-            database.lyricDao().deleteOlderThan(System.currentTimeMillis() - LYRIC_TTL_MS)
-            settings.setLastCleanupAt(System.currentTimeMillis())
-            _state.value = CleanState.Done(removed, invalid)
-            Log.i(TAG, "cleanup done: removedTracks=$removed invalidPlaylists=$invalid")
-        }.onFailure { e ->
-            Log.w(TAG, "cleanup failed: ${e.message}")
-            _state.value = CleanState.Error(e.message ?: "清理失败")
+            _state.value = CleanState.Running
+            runCatching {
+                // 哨兵不过 = 网络死，全部探测结果不可信。静默轮空（force 手动触发时给出反馈），
+                // 不更新 lastCleanupAt，让下个启动窗口重试。
+                if (!sourceManager.ping()) {
+                    Log.w(TAG, "cleanup skipped: connectivity sentinel failed")
+                    _state.value = if (force) {
+                        CleanState.Error("网络不可用，本次未清理")
+                    } else {
+                        CleanState.Idle
+                    }
+                    return
+                }
+                val removed = cleanDeadTracks()
+                val invalid = cleanInvalidPlaylists()
+                database.lyricDao().deleteOlderThan(System.currentTimeMillis() - LYRIC_TTL_MS)
+                settings.setLastCleanupAt(System.currentTimeMillis())
+                _state.value = CleanState.Done(removed, invalid)
+                Log.i(TAG, "cleanup done: removedTracks=$removed invalidPlaylists=$invalid")
+            }.onFailure { e ->
+                Log.w(TAG, "cleanup failed: ${e.message}")
+                _state.value = CleanState.Error(e.message ?: "清理失败")
+            }
+        } finally {
+            runMutex.unlock()
         }
     }
 
     /**
      * 探测收藏+历史（按 trackId 去重），连续两轮失败才从两张表删掉；返回删除数。
      * 上轮挂账（pendingDeadTracks）里本轮恢复可播的自动出账。
+     * v3.4：探测超时按"本轮不可信"处理——既不挂账也不出账/删除，
+     * 连续两个弱网周期不会把好歌推进删除流程。
      */
     private suspend fun cleanDeadTracks(): Int {
         val favoriteDao = database.favoriteDao()
@@ -105,23 +118,28 @@ class ContentCleaner(
         coroutineScope {
             all.map { track ->
                 async {
-                    val playable = semaphore.withPermit {
+                    // 三态：true=确认可播 / false=平台确认不可播 / null=超时（本轮证据不可信）
+                    val probed: Boolean? = semaphore.withPermit {
                         playerManager.awaitNotPlaying()   // 播放中让路，不抢带宽
                         withTimeoutOrNull(TRACK_PROBE_TIMEOUT_MS) {
                             runCatching { sourceManager.getMediaSourceNoFallback(track) }
-                                .getOrNull()?.let { !it.isExpired() } ?: false
-                        } ?: false  // 超时按不可播处理
-                    }
-                    when (ledger.onProbed(track.trackId, playable)) {
-                        DeadTrackLedger.Decision.DELETE -> {
-                            favoriteDao.deleteById(track.trackId)
-                            historyDao.deleteById(track.trackId)
-                            synchronized(this@ContentCleaner) { removed++ }
-                            Log.d(TAG, "removed dead track: ${track.trackId} ${track.title}")
+                                .getOrNull()?.let { !it.isExpired() }
                         }
-                        DeadTrackLedger.Decision.PENDING ->
-                            Log.d(TAG, "track probe failed, pending next cycle: ${track.trackId}")
-                        DeadTrackLedger.Decision.KEEP -> Unit
+                    }
+                    when {
+                        probed == null ->
+                            Log.d(TAG, "track probe timed out, no ledger change: ${track.trackId}")
+                        else -> when (ledger.onProbed(track.trackId, probed)) {
+                            DeadTrackLedger.Decision.DELETE -> {
+                                favoriteDao.deleteById(track.trackId)
+                                historyDao.deleteById(track.trackId)
+                                synchronized(this@ContentCleaner) { removed++ }
+                                Log.d(TAG, "removed dead track: ${track.trackId} ${track.title}")
+                            }
+                            DeadTrackLedger.Decision.PENDING ->
+                                Log.d(TAG, "track probe failed, pending next cycle: ${track.trackId}")
+                            DeadTrackLedger.Decision.KEEP -> Unit
+                        }
                     }
                 }
             }.forEach { it.await() }
@@ -130,25 +148,36 @@ class ContentCleaner(
         return removed
     }
 
-    /** 逐个验证推荐歌单，失败/空的歌单写黑名单（覆盖式，恢复的自动移出）；返回无效数 */
+    /**
+     * 逐个验证推荐歌单，失败/空的歌单写黑名单；返回本轮确认无效数。
+     * v3.4 两处语义修正：
+     * 1. 黑名单成员也重新探测（includeInvalid=true）——恢复的歌单自动移出黑名单，
+     *    不再是"隔周放出来挨一刀"的振荡；
+     * 2. 本轮未探测到的旧黑名单条目保留（合并写而非覆盖写），不因一次探测缺席就放出来。
+     */
     private suspend fun cleanInvalidPlaylists(): Int {
-        val playlists = sourceManager.getRecommendedPlaylists()
+        val playlists = sourceManager.getRecommendedPlaylists(includeInvalid = true)
         val semaphore = Semaphore(2)
         val invalid = coroutineScope {
             playlists.map { playlist ->
                 async {
-                    val ok = semaphore.withPermit {
+                    // 三态：true=有可播曲目 / false=确认无效 / null=超时（不计入黑名单）
+                    val ok: Boolean? = semaphore.withPermit {
                         playerManager.awaitNotPlaying()
                         withTimeoutOrNull(PLAYLIST_PROBE_TIMEOUT_MS) {
                             runCatching { sourceManager.getPlaylistTracks(playlist).isNotEmpty() }
-                                .getOrDefault(false)
-                        } ?: false
+                                .getOrNull()
+                        }
                     }
-                    if (ok) null else playlist.playlistId
+                    if (ok == false) playlist.playlistId else null
                 }
             }.mapNotNull { it.await() }.toSet()
         }
-        settings.setInvalidPlaylists(invalid)
+        // 合并写：旧黑名单 ∪ 本轮确认无效，减去本轮验证通过的
+        val previous = settings.invalidPlaylists.first()
+        val probedThisRun = playlists.map { it.playlistId }.toSet()
+        val merged = (invalid + previous.filter { it !in probedThisRun }).toSet()
+        settings.setInvalidPlaylists(merged)
         if (invalid.isNotEmpty()) Log.i(TAG, "invalid playlists: $invalid")
         return invalid.size
     }

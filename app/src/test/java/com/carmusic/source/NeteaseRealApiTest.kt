@@ -4,19 +4,22 @@ import com.carmusic.source.providers.NeteaseSource
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import org.junit.Assert.assertTrue
-import org.junit.Ignore
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.util.concurrent.TimeUnit
 
 /**
- * 真实网络接口实测（手动验证工具，CI 请忽略）。
+ * 真实网络接口实测（默认跳过，`gradlew testDebugUnitTest -PintegrationTests` 时执行）。
  * 用于验证网易云 weapi 新接口（toplist / highquality）匿名可用性。
  */
 class NeteaseRealApiTest {
 
+    private fun requireIntegration() =
+        assumeTrue("需要 -PintegrationTests 才执行真实网络测试", System.getProperty("carmusic.integrationTests") == "true")
+
     @Test
-    @Ignore("手动实测工具：去掉 @Ignore 后运行")
     fun recommendedPlaylists_realNetwork() = runBlocking {
+        requireIntegration()
         val client = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
@@ -29,8 +32,13 @@ class NeteaseRealApiTest {
     }
 
     @Test
-    @Ignore("手动实测工具：去掉 @Ignore 后运行")
     fun playlistTracks_realNetwork() = runBlocking {
+        requireIntegration()
+        // weapi 链路依赖 android.util.Base64：JVM(returnDefaultValues) 下返回 null 必 NPE，
+        // 该链路由 scripts/test_netease_weapi.py 验证；在真机/插桩环境本测试自动恢复执行
+        org.junit.Assume.assumeTrue(
+            android.util.Base64.encodeToString(byteArrayOf(1), android.util.Base64.NO_WRAP) != null
+        )
         val client = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)

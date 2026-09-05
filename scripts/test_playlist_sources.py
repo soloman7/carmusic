@@ -394,7 +394,8 @@ def test_maoer():
         if not sample: raise RuntimeError("无可抽查曲目")
         ok = 0
         for s in sample:
-            j, err = get_json(f"https://www.missevan.com/sound/getsound?soundid={s['id']}")
+            # v3.4: getsound 已上 WAF, 无 Referer 被 JS 挑战页拦截 (与 MaoerSource.kt 同步)
+            j, err = get_json(f"https://www.missevan.com/sound/getsound?soundid={s['id']}", headers={"Referer": "https://www.missevan.com/"})
             if err: raise RuntimeError(err)
             url = (((j or {}).get("info") or {}).get("sound") or {}).get("soundurl") or ""
             if url.startswith("http"):
@@ -456,6 +457,10 @@ def test_jamendo():
     return res
 
 # ---------------- 主流程 ----------------
+# 已知可接受、不拦截发版的失效项 (platform, item)。填写必须有据可查（接口已死且无法替代等），
+# 并同步标注到 README 的歌单覆盖表。
+WARN_ITEMS = set()
+
 def main():
     all_res = {}
     all_res["网易云"] = test_netease()
@@ -477,12 +482,23 @@ def main():
     print()
     print("=" * 60)
     print("汇总：")
+    blocking = 0
     for platform, res in all_res.items():
-        fails = [k for k, (ok, _) in res.items() if ok is False]
+        fails, warns = [], []
+        for k, (ok, _) in res.items():
+            if ok is False:
+                (warns if (platform, k) in WARN_ITEMS else fails).append(k)
         if fails:
             print(f"  {platform}: ❌ 失效项 -> {', '.join(fails)}")
+            blocking += len(fails)
+        elif warns:
+            print(f"  {platform}: ⚠️ warn（不拦截）-> {', '.join(warns)}")
         else:
             print(f"  {platform}: ✅ 全部通过")
+    if blocking:
+        print(f"\n结果: {blocking} 项失效，发版红线拦截（先修复或在 WARN_ITEMS 有据降级）")
+        sys.exit(1)
+    print("\n结果: 全部通过（或仅 warn），允许发版")
 
 if __name__ == "__main__":
     main()
