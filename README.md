@@ -124,8 +124,12 @@ APK 输出：`app/build/outputs/apk/debug/app-debug.apk`
 3. 车机文件管理器找到 APK，点击安装（首次需开启"未知来源"）
 
 方法 2（车机浏览器）：
-1. 把 APK 上传到网盘
+1. 打开 GitHub Release 页下载 APK：https://github.com/soloman7/carmusic/releases/latest
 2. 车机浏览器下载并安装
+
+方法 2.5（应用内自动更新，推荐）：
+设置页 update_url 配置 `https://raw.githubusercontent.com/soloman7/carmusic/master/version.json`，
+之后每周新版本启动时会自动提示下载安装（SHA-256 校验）。
 
 方法 3（ADB，开发者）：
 ```bash
