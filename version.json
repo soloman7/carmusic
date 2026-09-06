@@ -1,7 +1,7 @@
 {
   "versionCode": 22,
   "versionName": "3.4.1",
-  "url": "https://github.com/soloman7/carmusic/releases/download/v3.4.0/carmusic-v3.4.0-release.apk",
+  "url": "https://raw.githubusercontent.com/soloman7/carmusic/dl/carmusic-release.apk",
   "notes": "v3.4.0:修复应用内更新安装失败(FileProvider)；播放器重进App复活；失败不进缓存；猫耳FM修复；清理器防误删收藏",
   "sha256": "38353331e3db7e97050fb88c72ca23559ceffed416c98f614d96d9d453dd485c"
 }
