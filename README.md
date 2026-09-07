@@ -128,8 +128,8 @@ APK 输出：`app/build/outputs/apk/debug/app-debug.apk`
 2. 车机浏览器下载并安装
 
 方法 2.5（应用内自动更新，推荐）：
-设置页 update_url 配置 `https://raw.githubusercontent.com/soloman7/carmusic/master/version.json`，
-之后每周新版本启动时会自动提示下载安装（SHA-256 校验）。
+设置页 update_url 配置 `https://ghproxy.net/https://raw.githubusercontent.com/soloman7/carmusic/master/version.json`
+（raw 直连国内常被断，经 ghproxy.net 中转；DiLink 实测检查/下载/安装全链路可用）。
 
 方法 3（ADB，开发者）：
 ```bash
