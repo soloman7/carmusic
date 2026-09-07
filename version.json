@@ -1,7 +1,7 @@
 {
-  "versionCode": 22,
-  "versionName": "3.4.1",
+  "versionCode": 23,
+  "versionName": "3.4.2",
   "url": "https://gh-proxy.com/https://raw.githubusercontent.com/soloman7/carmusic/dl/carmusic-release.apk",
-  "notes": "v3.4.0:修复应用内更新安装失败(FileProvider)；播放器重进App复活；失败不进缓存；猫耳FM修复；清理器防误删收藏",
-  "sha256": "38353331e3db7e97050fb88c72ca23559ceffed416c98f614d96d9d453dd485c"
+  "notes": "v3.4.2:安装 intent 适配 DiLink(ACTION_VIEW 优先)；含 v3.4.0 全部整改(更新链路/播放器复活/缓存/猫耳/清理器)",
+  "sha256": "3cccb82fdf0564062b2a2b167dac901aa28a7dcae964708a479fd95184dc954a"
 }
