@@ -2,7 +2,6 @@ package com.carmusic.update
 
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.util.Log
 import androidx.core.content.FileProvider
 import com.carmusic.BuildConfig
@@ -175,27 +174,29 @@ class UpdateManager(
     }
 
     /**
-     * 引导安装：未授权"安装未知来源应用"时跳系统授权页；已授权则经 FileProvider 拉起安装器。
-     * 返回 true 表示已发出安装意图。
+     * 引导安装：经 FileProvider 拉起安装器。
+     *
+     * DiLink 车机实测（v3.4.0, 2026-09）：
+     * - ACTION_MANAGE_UNKNOWN_APP_SOURCES 授权页和 ACTION_INSTALL_PACKAGE 都会被系统
+     *   以"多媒体系统不支持该操作"拒绝（DiLink 把这两类 intent 路由给了多媒体处理器）；
+     * - 车机文件管理器装 U盘 APK 走的是 ACTION_VIEW + package-archive MIME，这条路可用。
+     * 所以主路径照抄文件管理器：ACTION_VIEW；异常时再兜底标准包安装器。
+     * 全局"未知来源"开关由用户装 U盘 APK 时开启，应用内不再做授权页跳转。
      */
     fun installApk(activity: Context, apk: File): Boolean {
-        if (!activity.packageManager.canRequestPackageInstalls()) {
-            val intent = Intent(
-                android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                Uri.parse("package:${activity.packageName}")
-            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            runCatching { activity.startActivity(intent) }
-            return false
-        }
         val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.fileprovider", apk)
-        val intent = Intent(android.content.Intent.ACTION_INSTALL_PACKAGE).apply {
-            // ACTION_INSTALL_PACKAGE 走系统包安装器标准路径（ACTION_VIEW 依赖文件管理器对
-            // application/vnd.android.package-archive 的处理，车机上不一定有）
+        val viewIntent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, "application/vnd.android.package-archive")
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        return runCatching { activity.startActivity(intent) }.isSuccess
+        if (runCatching { activity.startActivity(viewIntent) }.isSuccess) return true
+        val installIntent = Intent(android.content.Intent.ACTION_INSTALL_PACKAGE).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        return runCatching { activity.startActivity(installIntent) }.isSuccess
     }
 
     companion object {

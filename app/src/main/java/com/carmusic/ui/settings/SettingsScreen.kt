@@ -468,9 +468,9 @@ fun SettingsScreen(
                 Button(
                     onClick = {
                         if (!vm.installUpdate(s.apk)) {
-                            // 返回 false = 已跳系统"安装未知应用"授权页，回来要再点一次
+                            // 返回 false = 系统拒绝了全部安装意图（DiLink 兼容问题）
                             android.widget.Toast.makeText(
-                                installCtx, "请先允许安装，然后返回再点一次", android.widget.Toast.LENGTH_LONG
+                                installCtx, "系统拒绝了安装请求，请用文件管理器手动安装", android.widget.Toast.LENGTH_LONG
                             ).show()
                         }
                     },

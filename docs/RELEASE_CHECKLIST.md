@@ -45,4 +45,5 @@
 | 日期 | 版本 | 各项结果 | 执行人 |
 |---|---|---|---|
 | 2026-09-06 | v3.4.0 | assembleDebug ✅ / 单测 62 条 0 失败 ✅ / integrationTests 全过(网易 weapi 曲目测试 JVM 下按前提跳过,由 test_netease_weapi.py ✅ 覆盖) / 回归脚本 7/7 exit 0 ✅ / test_netease_weapi.py ✅ / 应用内更新端到端待车机实测(本版首次修复 FileProvider,装上 v3.4.0 后下一版必须走通) / 冒烟 10 项待车机 | ZCode |
+| 2026-09-07 | v3.4.2 (dry-run) | 车机实测反馈：v3.4.0 检查更新✅、下载✅(走 gh-proxy 加速通道)、点安装被 DiLink 拒绝("多媒体系统不支持该操作")→ 定位为 ACTION_MANAGE_UNKNOWN_APP_SOURCES 授权页与 ACTION_INSTALL_PACKAGE 均被 DiLink 路由拒绝。v3.4.2(code 23) 改 ACTION_VIEW 优先(文件管理器同款路径)并去掉授权页跳转。待 U盘安装 v3.4.2 后再干跑验证安装链路 | ZCode |
 | | | | |
