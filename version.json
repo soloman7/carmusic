@@ -1,7 +1,7 @@
 {
   "versionCode": 24,
   "versionName": "3.4.3",
-  "url": "https://gh-proxy.com/https://raw.githubusercontent.com/soloman7/carmusic/dl/carmusic-release.apk",
+  "url": "https://ghproxy.net/https://raw.githubusercontent.com/soloman7/carmusic/dl/carmusic-release.apk",
   "notes": "v3.4.3 干跑:重装同一安装包,验证 ACTION_VIEW 安装链路闭环",
   "sha256": "3cccb82fdf0564062b2a2b167dac901aa28a7dcae964708a479fd95184dc954a"
 }
