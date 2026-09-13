@@ -24,8 +24,8 @@ import kotlinx.coroutines.withTimeoutOrNull
  * 项目无 WorkManager/常驻后台，"每周"= App 启动时检查距上次清理是否超 7 天
  * （AppContainer 启动后延迟触发，也可在设置页手动"立即清理"）。清理内容：
  * 1. 收藏/历史里的死链歌曲：逐首用 getMediaSourceNoFallback 轻量探测（不触发跨平台 fallback），
- *    连续两个清理周期（约 14 天）都拿不到播放地址才删除——首轮失败只进 DataStore 挂账，
- *    中间恢复播放自动出账。车库弱网/平台抖动的"探测失败"不再等于死链。
+ *    连续两个清理周期（约 14 天）"平台确认无源"才删除——首轮失败只进 DataStore 挂账；
+ *    出账靠下轮探测成功或期间播放成功（实时）。网络故障/超时/播放让路 = 证据不可信，不动账本。
  * 2. 无效歌单：推荐歌单逐个拉曲目，拉取失败或可播曲目为 0 的进 DataStore 黑名单
  *    （invalid_playlists，合并写入；黑名单成员每轮仍被重新探测，恢复即自动移出）。
  * 3. 过期歌词：LyricDao.deleteOlderThan(30 天)。
@@ -99,15 +99,21 @@ class ContentCleaner(
     /**
      * 探测收藏+历史（按 trackId 去重），连续两轮失败才从两张表删掉；返回删除数。
      * 上轮挂账（pendingDeadTracks）里本轮恢复可播的自动出账。
-     * v3.4：探测超时按"本轮不可信"处理——既不挂账也不出账/删除，
-     * 连续两个弱网周期不会把好歌推进删除流程。
+     * v3.4.3 证据语义（修正 v3.4 把 DELETE 证据绑在"返回已过期 URL"上的不可达回归）：
+     * - true  = 拿到可用播放地址（出账）
+     * - false = 平台**确认无源**（provider 返回 null；挂账/删除的唯一删除性证据）
+     * - null  = 网络故障（SourceUnavailableException）或探测超时或播放让路（证据不可信，不动账本）
+     * 残余风险如实说明：provider 内部把 HTTP 错误也吞成 null（ProviderHttp），故平台级宕机
+     * 会被误读为"确认无源"——由 ping 哨兵 + 两周期确认 + 播放成功实时出账三道闸兜底。
      */
     private suspend fun cleanDeadTracks(): Int {
         val favoriteDao = database.favoriteDao()
         val historyDao = database.historyDao()
         // 历史表只保留最近 200 条（insertAndTrim），取首帧全量即可
         val history = historyDao.getRecentFlow(200).first().map { it.toTrack() }
-        val all = (favoriteDao.getAll().map { it.toTrack() } + history)
+        val favorites = favoriteDao.getAll()
+        val allIds = (favorites.map { it.trackId } + history.map { it.trackId }).toSet()
+        val probeList = (favorites.map { it.toTrack() } + history)
             .distinctBy { it.trackId }
             .take(MAX_PROBE_PER_RUN)
 
@@ -116,19 +122,27 @@ class ContentCleaner(
         val semaphore = Semaphore(3)
         var removed = 0
         coroutineScope {
-            all.map { track ->
+            probeList.map { track ->
                 async {
-                    // 三态：true=确认可播 / false=平台确认不可播 / null=超时（本轮证据不可信）
                     val probed: Boolean? = semaphore.withPermit {
-                        playerManager.awaitNotPlaying()   // 播放中让路，不抢带宽
-                        withTimeoutOrNull(TRACK_PROBE_TIMEOUT_MS) {
-                            runCatching { sourceManager.getMediaSourceNoFallback(track) }
-                                .getOrNull()?.let { !it.isExpired() }
+                        // 让路也要有界：车机上音乐常播，无界等待会饿死整轮清理并锁死手动通道
+                        val free = withTimeoutOrNull(PLAY_AWAIT_TIMEOUT_MS) { playerManager.awaitNotPlaying() }
+                        if (free == null) {
+                            null
+                        } else {
+                            withTimeoutOrNull(TRACK_PROBE_TIMEOUT_MS) {
+                                try {
+                                    sourceManager.getMediaSourceNoFallback(track)
+                                        ?.let { !it.isExpired() } ?: false
+                                } catch (e: com.carmusic.source.SourceUnavailableException) {
+                                    null
+                                }
+                            }
                         }
                     }
                     when {
                         probed == null ->
-                            Log.d(TAG, "track probe timed out, no ledger change: ${track.trackId}")
+                            Log.d(TAG, "probe inconclusive, no ledger change: ${track.trackId}")
                         else -> when (ledger.onProbed(track.trackId, probed)) {
                             DeadTrackLedger.Decision.DELETE -> {
                                 favoriteDao.deleteById(track.trackId)
@@ -144,7 +158,9 @@ class ContentCleaner(
                 }
             }.forEach { it.await() }
         }
-        settings.setPendingDeadTracks(ledger.pendingAfterRun())
+        // 修剪挂账：只保留仍存在于收藏/历史的曲目——用户删掉挂账歌再重新收藏同 trackId 时，
+        // 旧挂账会把两周期确认退化成单周期判死
+        settings.setPendingDeadTracks(ledger.pendingAfterRun() intersect allIds)
         return removed
     }
 
@@ -153,33 +169,42 @@ class ContentCleaner(
      * v3.4 两处语义修正：
      * 1. 黑名单成员也重新探测（includeInvalid=true）——恢复的歌单自动移出黑名单，
      *    不再是"隔周放出来挨一刀"的振荡；
-     * 2. 本轮未探测到的旧黑名单条目保留（合并写而非覆盖写），不因一次探测缺席就放出来。
+     * 2. 黑名单移出条件 = 本轮**验证通过**，而非"出现在探测列表里"——
+     *    v3.4 的 merge 把"探了但超时"的歌单误当"验证通过"放出来，重新引入振荡。
      */
     private suspend fun cleanInvalidPlaylists(): Int {
         val playlists = sourceManager.getRecommendedPlaylists(includeInvalid = true)
         val semaphore = Semaphore(2)
-        val invalid = coroutineScope {
+        val verdicts = coroutineScope {
             playlists.map { playlist ->
                 async {
-                    // 三态：true=有可播曲目 / false=确认无效 / null=超时（不计入黑名单）
+                    // 三态：true=有可播曲目 / false=确认无效 / null=超时（证据不可信）
                     val ok: Boolean? = semaphore.withPermit {
-                        playerManager.awaitNotPlaying()
-                        withTimeoutOrNull(PLAYLIST_PROBE_TIMEOUT_MS) {
-                            runCatching { sourceManager.getPlaylistTracks(playlist).isNotEmpty() }
-                                .getOrNull()
+                        val free = withTimeoutOrNull(PLAY_AWAIT_TIMEOUT_MS) { playerManager.awaitNotPlaying() }
+                        if (free == null) {
+                            null
+                        } else {
+                            withTimeoutOrNull(PLAYLIST_PROBE_TIMEOUT_MS) {
+                                try {
+                                    sourceManager.getPlaylistTracks(playlist).let { it.isNotEmpty() }
+                                } catch (e: com.carmusic.source.SourceUnavailableException) {
+                                    null
+                                }
+                            }
                         }
                     }
-                    if (ok == false) playlist.playlistId else null
+                    playlist.playlistId to ok
                 }
-            }.mapNotNull { it.await() }.toSet()
+            }.map { it.await() }
         }
-        // 合并写：旧黑名单 ∪ 本轮确认无效，减去本轮验证通过的
+        val confirmedInvalid = verdicts.filter { it.second == false }.map { it.first }.toSet()
+        val verifiedOk = verdicts.filter { it.second == true }.map { it.first }.toSet()
+        // 合并写：旧黑名单 ∪ 本轮确认无效 − 本轮验证通过；超时(null)条目保留在黑名单
         val previous = settings.invalidPlaylists.first()
-        val probedThisRun = playlists.map { it.playlistId }.toSet()
-        val merged = (invalid + previous.filter { it !in probedThisRun }).toSet()
+        val merged = (confirmedInvalid + previous.filter { it !in verifiedOk }).toSet()
         settings.setInvalidPlaylists(merged)
-        if (invalid.isNotEmpty()) Log.i(TAG, "invalid playlists: $invalid")
-        return invalid.size
+        if (confirmedInvalid.isNotEmpty()) Log.i(TAG, "invalid playlists: $confirmedInvalid")
+        return confirmedInvalid.size
     }
 
     private fun com.carmusic.data.FavoriteEntity.toTrack() = Track(
@@ -199,5 +224,8 @@ class ContentCleaner(
         private const val MAX_PROBE_PER_RUN = 200
         private const val TRACK_PROBE_TIMEOUT_MS = 8_000L
         private const val PLAYLIST_PROBE_TIMEOUT_MS = 15_000L
+
+        /** 播放避让上限：车机上音乐常播，无界等待会让整轮清理饿死并锁死手动通道 */
+        private const val PLAY_AWAIT_TIMEOUT_MS = 60_000L
     }
 }

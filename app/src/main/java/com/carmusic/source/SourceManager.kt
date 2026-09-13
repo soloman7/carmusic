@@ -104,11 +104,18 @@ class SourceManager(okHttpClient: OkHttpClient, private val settingsRepository: 
             val filtered = enabledPlatforms?.let { en -> sources.filter { it.platform in en } }
                 ?: sources
             val collected = mutableListOf<List<Track>>()
+            val answered = java.util.concurrent.atomic.AtomicInteger(0)
             coroutineScope {
                 filtered.map { source ->
                     launch {
                         val result = withTimeoutOrNull(SOURCE_TIMEOUT_MS) {
-                            runCatching { source.search(keyword, page = 1, limit = 15) }.getOrNull()
+                            try {
+                                source.search(keyword, page = 1, limit = 15).also { answered.incrementAndGet() }
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                null
+                            }
                         } ?: emptyList()
                         if (result.isNotEmpty()) {
                             synchronized(collected) { collected.add(result) }
@@ -116,6 +123,12 @@ class SourceManager(okHttpClient: OkHttpClient, private val settingsRepository: 
                         }
                     }
                 }
+            }
+            // 与 searchAll 同语义(v3.4.3 补齐,此前只有非流式路径有):
+            // 全源都没应答(断网/全超时)≠ 真无结果 —— 上抛让 UI 走错误态+重试,
+            // 而不是 putDirect 缓存 5 分钟假"无结果"把错误态变成不可达死代码
+            if (answered.get() == 0 && filtered.isNotEmpty()) {
+                throw SourceUnavailableException("search stream [$keyword]: all ${filtered.size} sources failed")
             }
             ApiCache.putDirect(key, mergeSorted(collected.flatten(), emptyList()))
         }.runningFold(initial = emptyList()) { acc, chunk -> mergeSorted(acc, chunk) }
@@ -219,11 +232,19 @@ class SourceManager(okHttpClient: OkHttpClient, private val settingsRepository: 
 
     /**
      * 轻量版：只走原平台，不触发跨平台 fallback。
-     * 用于预加载场景，避免一次切换放大成多次跨平台搜索请求。
+     * 用于预加载与清理探针。v3.4.3 起异常不再吞成 null：网络故障抛 [SourceUnavailableException]，
+     * 返回 null = 平台确认无源——两者必须可区分，否则清理器的死链删除证据永远不可信。
      */
     suspend fun getMediaSourceNoFallback(track: Track): MediaSource? {
         val origin = sources.find { it.platform == track.platform } ?: return null
-        return runCatching { origin.getMediaSource(track) }.getOrNull()
+        return try {
+            origin.getMediaSource(track)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "getMediaSourceNoFallback failed for ${track.platform}: ${e.message}")
+            throw SourceUnavailableException("origin ${track.platform} failed: ${e.message}", e)
+        }
     }
 
     fun getSource(platform: String): MusicSource? = sources.find { it.platform == platform }

@@ -456,10 +456,83 @@ def test_jamendo():
         print(f"  [{mark}] {k}: {msg}")
     return res
 
+# ---------------- 关键词搜索(v3.4.3 补测,历史盲区) ----------------
+def test_search():
+    """逐平台实测关键词搜索端点。回归脚本此前只测歌单链路,而搜索是 App 最高频功能。"""
+    import urllib.parse
+    print("=" * 60)
+    print("【关键词搜索】统一用『周杰伦』(Jamendo 用英文词,国际曲库)")
+    res = {}
+    kw = urllib.parse.quote("周杰伦")
+
+    def count(name, fn):
+        try:
+            n = fn()
+            res[name] = (n > 0, f"{n} 条" if n else "0 条")
+        except Exception as e:
+            res[name] = (False, f"{type(e).__name__}: {str(e)[:60]}")
+
+    def kugou():
+        j, e = get_json(f"http://mobilecdnbj.kugou.com/api/v3/search/song?format=json&keyword={kw}&page=1&pagesize=10")
+        return len(((j or {}).get("data") or {}).get("info") or [])
+    count("酷狗", kugou)
+
+    def kuwo():
+        # 与 KuwoSource.kt 一致:www.kuwo.cn searchMusicBykeyWord
+        j, e = get_json("https://www.kuwo.cn/search/searchMusicBykeyWord?vipver=1&client=kt&ft=music"
+                        "&cluster=0&strategy=2012&encoding=utf8&rformat=json&mobi=1&show_copyright_off=1&pn=0&rn=10&all=" + kw)
+        return len((j or {}).get("abslist") or [])
+    count("酷我", kuwo)
+
+    def netease():
+        j, e = weapi("/weapi/search/get", {"s": "周杰伦", "type": 1, "limit": 10, "offset": 0})
+        return len(((j or {}).get("result") or {}).get("songs") or [])
+    count("网易云", netease)
+
+    def maoer():
+        r = S.get(f"https://www.missevan.com/sound/getsearch?s={kw}&p=1&type=3&page_size=10",
+                  headers={"User-Agent": UA, "Referer": "https://www.missevan.com/"}, timeout=TIMEOUT)
+        return len(((r.json().get("info") or {}).get("Datas")) or [])
+    count("猫耳FM", maoer)
+
+    def migu():
+        # 与 MiguSource.kt 一致:scr_search_tag + Referer
+        r = S.get(f"https://m.music.migu.cn/migu/remoting/scr_search_tag?rows=10&type=2&keyword={kw}&pgc=1",
+                  headers={"User-Agent": UA, "Referer": "https://m.music.migu.cn/"}, timeout=TIMEOUT)
+        return len((r.json().get("musics")) or [])
+    count("咪咕", migu)
+
+    def qq():
+        payload = {"comm": {"ct": "19", "cv": "1859", "uin": "0"},
+                   "req": {"method": "DoSearchForQQMusicDesktop", "module": "music.search.SearchCgiService",
+                           "param": {"grp": 1, "search_type": 0, "query": "周杰伦", "page_num": 1, "num_per_page": 10}}}
+        r = S.post("https://u.y.qq.com/cgi-bin/musicu.fly", json=payload,
+                   headers={"User-Agent": UA, "Referer": "https://y.qq.com/"}, timeout=TIMEOUT)
+        j = r.json()
+        return len(((((j.get("req") or {}).get("data") or {}).get("body") or {}).get("song")) or {}).get("list") or []
+    count("QQ音乐", qq)
+
+    def jamendo():
+        # Jamendo 服务端 ~1/3 概率空返回,复用歌单侧的 4 次重试逻辑
+        tracks, err, _ = jamendo_fetch("limit=10&namesearch=summer")
+        return len(tracks or [])
+    count("Jamendo", jamendo)
+
+    for k, (ok, msg) in res.items():
+        mark = "✅" if ok else "❌"
+        print(f"  [{mark}] {k}: {msg}")
+    return res
+
+
 # ---------------- 主流程 ----------------
 # 已知可接受、不拦截发版的失效项 (platform, item)。填写必须有据可查（接口已死且无法替代等），
 # 并同步标注到 README 的歌单覆盖表。
-WARN_ITEMS = set()
+WARN_ITEMS = {
+    # 咪咕 m.music.migu.cn 搜索端点 2026-09-13 实测返回反爬 HTML(歌单/曲目/播放链路正常),待真机复核
+    ("搜索", "咪咕"),
+    # QQ musicu.fly 搜索 2026-09-13 PC 侧 404(vkey/歌单/播放链路正常,疑似 IP 区域差异),待真机复核
+    ("搜索", "QQ音乐"),
+}
 
 def main():
     all_res = {}
@@ -476,6 +549,8 @@ def main():
     all_res["猫耳FM"] = test_maoer()
     time.sleep(1)
     all_res["Jamendo"] = test_jamendo()
+    time.sleep(1)
+    all_res["搜索"] = test_search()
     print()
     print("=" * 60)
     print("【GdStudio】纯 fallback 解析器，无歌单功能，跳过")

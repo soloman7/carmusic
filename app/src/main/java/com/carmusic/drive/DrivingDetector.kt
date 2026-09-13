@@ -22,6 +22,14 @@ import kotlinx.coroutines.flow.asStateFlow
  * - 退出：速度连续 10 个样本 < 3 km/h（堵车蠕行、等红灯不误退出）
  * 30s 无定位信号自动恢复为非驾驶状态（防止隧道/地库丢星后状态卡住）。
  *
+ * v3.4.3 修正两个实测洞：
+ * - 无速度字段的定位（NETWORK provider 普遍不带 speed）不再按 0 m/s 计样本——
+ *   否则 GPS 弱信号时被网络定位的 10 个假"停驻"样本误判停车、退出驾驶模式，
+ *   且退出条件永远凑不齐无法再进入。不确定的样本直接跳过：维持原状态
+ *   （不确定时倾向"继续驾驶模式"是安全方向，误锁搜索好过行驶中解锁）。
+ * - 30s 超时强制非驾驶时同步 reset 滞回状态机——否则恢复定位后单个旧样本
+ *   就把状态弹回驾驶态，UI 反复横跳。
+ *
  * start() 幂等且安全：未授权（ACCESS_FINE/COARSE_LOCATION）时不置 running、
  * 不注册监听；权限到位后再次调用即可成功启动。
  */
@@ -30,6 +38,9 @@ class DrivingDetector(private val context: Context) {
     companion object {
         private const val TAG = "DrivingDetector"
         private const val TIMEOUT_MS = 30_000L
+
+        /** 纯函数便于单测：无速度字段的样本返回 null（跳过，不计入滞回） */
+        fun effectiveSpeed(loc: Location): Float? = if (loc.hasSpeed()) loc.speed else null
     }
 
     private val _isDriving = MutableStateFlow(false)
@@ -50,8 +61,7 @@ class DrivingDetector(private val context: Context) {
     private val listener = object : LocationListener {
         override fun onLocationChanged(loc: Location) {
             lastLocationAt = SystemClock.elapsedRealtime()
-            // 无速度字段的定位按 0 处理（视为停驻样本，向退出方向累计）
-            val speed = if (loc.hasSpeed()) loc.speed else 0f
+            val speed = effectiveSpeed(loc) ?: return   // 无速度字段：跳过，不向任何方向累计
             _isDriving.value = hysteresis.onSample(speed)
         }
 
@@ -69,6 +79,8 @@ class DrivingDetector(private val context: Context) {
         override fun run() {
             if (!running) return
             if (SystemClock.elapsedRealtime() - lastLocationAt > TIMEOUT_MS) {
+                // 强制非驾驶必须同时清滞回状态机，否则恢复定位后单个旧样本即弹回驾驶态
+                hysteresis.reset()
                 _isDriving.value = false
             }
             handler.postDelayed(this, 5_000)

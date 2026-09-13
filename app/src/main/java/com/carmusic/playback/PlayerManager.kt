@@ -240,6 +240,9 @@ class PlayerManager(
         override fun onPlaybackStateChanged(playbackState: Int) {
             if (playbackState == Player.STATE_READY) {
                 _duration.value = controller?.duration ?: 0L
+                // 播放成功 = 该曲目绝不是死链：实时从清理挂账出账
+                // （把 DeadTrackLedger 注释宣称的"恢复播放自动出账"从宣称变成真实路径）
+                clearPendingDead(_currentTrack.value?.trackId)
                 // 恢复播放：首轮 READY seek 到上次进度（仅当起始曲目就是存档曲目）
                 if (pendingRestorePositionMs >= 0) {
                     val c = controller
@@ -358,7 +361,9 @@ class PlayerManager(
     /** 播放列表（替换当前队列）。渐进式：phase1 原平台快路径出结果立即开播，
      *  phase2 跨平台 fallback 后台继续，解析出一首按原始位置插入一首——
      *  避免大批 VIP/独家歌触发 fallback 时几十秒静默，感知"播放不了"。 */
-    fun playAll(tracks: List<Track>, startIndex: Int = 0) {
+    /** @param playerOverride 方向盘/媒体键冷启动路径传入 session.player——此时 App 侧
+     *  MediaController 尚未连接，controller 为 null,不透传会导致"快照已消费但什么都不播" */
+    fun playAll(tracks: List<Track>, startIndex: Int = 0, playerOverride: Player? = null) {
         if (tracks.isEmpty() || startIndex !in tracks.indices) return
         retryCount = 0
         consecutiveFailTrack = null
@@ -371,7 +376,7 @@ class PlayerManager(
         playAllJob?.cancel()
         playAllJob = scope.launch {
             _error.value = null
-            val player = controller ?: return@launch
+            val player = playerOverride ?: controller ?: return@launch
 
             fun buildItem(t: Track, source: MediaSource): MediaItem = buildMediaItem(t, source)
 
@@ -470,11 +475,24 @@ class PlayerManager(
         if (c.isPlaying) c.pause() else c.play()
     }
 
-    private fun resumeRestored(snap: RestoredPlayback) {
+    private fun resumeRestored(snap: RestoredPlayback, playerOverride: Player? = null) {
         restoredSnapshot = null
         pendingRestorePositionMs = snap.positionMs
         pendingRestoreTrackId = snap.queue.getOrNull(snap.index)?.trackId
-        playAll(snap.queue, snap.index)
+        playAll(snap.queue, snap.index, playerOverride)
+    }
+
+    /**
+     * 媒体键冷启动恢复入口（PLAY/PAUSE/PLAY_PAUSE 键）：timeline 为空且有未消费快照时,
+     * 用传入的 session.player 直接续播。返回 true 表示已接管本次按键。
+     * 快照从 Room 异步读入,若按键早于 DB 读完成这里拿不到快照(返回 false),
+     * 属已知竞态窗口,由 UI 路径兜底。
+     */
+    fun playRestoredIfAny(player: Player): Boolean {
+        val snap = restoredSnapshot ?: return false
+        if (player.mediaItemCount > 0) return false
+        resumeRestored(snap, player)
+        return true
     }
 
     // ---- 播放模式 ----
@@ -514,9 +532,10 @@ class PlayerManager(
         val c = playerOverride ?: controller ?: return
         // 切歌即放弃待执行的重签，防止旧曲目 retry 炸掉当前会话的 phase2
         retryJob?.cancel()
-        // 杀进程后方向盘按键直接恢复上次会话（车机常见：上车先按下一首）
+        // 杀进程后方向盘按键直接恢复上次会话（车机常见：上车先按下一首）。
+        // 必须把 playerOverride 透传下去:controller 未连接时 playAll 否则会静默早退
         if (c.mediaItemCount == 0) {
-            restoredSnapshot?.let { resumeRestored(it); return }
+            restoredSnapshot?.let { resumeRestored(it, c); return }
         }
         val target = navigator.nextIndex(
             c.currentMediaItemIndex, c.mediaItemCount, _playMode.value
@@ -528,7 +547,7 @@ class PlayerManager(
         val c = playerOverride ?: controller ?: return
         retryJob?.cancel()
         if (c.mediaItemCount == 0) {
-            restoredSnapshot?.let { resumeRestored(it); return }
+            restoredSnapshot?.let { resumeRestored(it, c); return }
         }
         // 车机惯例：当前曲已播 >3s，"上一首"先回本曲开头；再按才真上一首
         if (c.playbackState != Player.STATE_ENDED && c.currentPosition > 3000 && c.mediaItemCount > 1) {
@@ -675,6 +694,19 @@ class PlayerManager(
             positionMs = c.currentPosition.coerceAtLeast(0L)
         )
         scope.launch { runCatching { database.playbackStateDao().upsert(entity) } }
+    }
+
+    /** 曲目播放成功即从清理挂账出账（成员检查前置，多数情况不产生 DataStore 写） */
+    private fun clearPendingDead(trackId: String?) {
+        if (trackId == null) return
+        scope.launch {
+            runCatching {
+                val pending = settingsRepository.pendingDeadTracks.first()
+                if (trackId in pending) {
+                    settingsRepository.setPendingDeadTracks(pending - trackId)
+                }
+            }
+        }
     }
 
     /**

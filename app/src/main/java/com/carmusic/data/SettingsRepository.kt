@@ -161,8 +161,9 @@ class SettingsRepository(private val context: Context) {
     suspend fun setInvalidPlaylists(ids: Set<String>) = context.settingsDataStore.edit { it[KEY_INVALID_PLAYLISTS] = ids }
 
     /**
-     * 上轮清理探测失败的 trackId 挂账集合。连续两轮（约 14 天）都失败才真正删除；
-     * 中间恢复播放的自动出账。防止单轮网络抖动/车库弱网把好歌当死链删掉。
+     * 上轮清理探测"确认无源"的 trackId 挂账集合。连续两轮（约 14 天）都确认无源才真正删除；
+     * 出账两条路：下轮探测可播，或期间播放成功（PlayerManager 在 STATE_READY 实时出账）。
+     * 防止单轮网络抖动/车库弱网把好歌当死链删掉。
      */
     val pendingDeadTracks: Flow<Set<String>> = context.settingsDataStore.data.map {
         it[KEY_PENDING_DEAD_TRACKS] ?: emptySet()

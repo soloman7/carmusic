@@ -64,11 +64,17 @@ class PlaylistViewModel(
     private val _hasMore = MutableStateFlow(true)
     val hasMore = _hasMore.asStateFlow()
 
+    /** 在途分页请求句柄：切平台必须取消，否则旧平台响应会拼进新平台列表并卡死 hasMore */
+    private var squareJob: kotlinx.coroutines.Job? = null
+
     fun selectPlatform(platform: String?) {
         if (_squarePlatform.value == platform) return
+        squareJob?.cancel()
+        squareJob = null
         _squarePlatform.value = platform
         _squareList.value = emptyList()
         _hasMore.value = true
+        _squareLoading.value = false   // 旧请求取消后必须复位,否则新平台第一页被 loading 挡掉
         if (platform != null) loadMore()
     }
 
@@ -76,17 +82,21 @@ class PlaylistViewModel(
         val p = _squarePlatform.value ?: return
         if (_squareLoading.value || !_hasMore.value) return
         _squareLoading.value = true
-        viewModelScope.launch {
+        squareJob = viewModelScope.launch {
             try {
                 val page = sourceManager.getPlaylistSquare(p, _squareList.value.size)
+                // 平台守卫：请求在途时用户可能已切走，过期响应绝不能再进列表
+                if (_squarePlatform.value != p) return@launch
                 if (page.isEmpty()) {
                     _hasMore.value = false
                 } else {
                     _squareList.value = (_squareList.value + page).distinctBy { it.playlistId }
                     if (page.size < 30) _hasMore.value = false
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e   // 切平台取消属正常流程
             } catch (e: Exception) {
-                _error.value = "歌单广场加载失败"
+                if (_squarePlatform.value == p) _error.value = "歌单广场加载失败"
             } finally {
                 _squareLoading.value = false
             }

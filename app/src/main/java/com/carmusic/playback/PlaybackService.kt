@@ -137,6 +137,9 @@ class PlaybackService : MediaLibraryService() {
          * 方向盘/蓝牙媒体键：DOWN 即切歌。
          * 实测 DiLink 短按只发 DOWN 不发 UP（v2.4 把切歌挂在 UP 上导致完全失效），
          * 快进快退已按用户要求移除。DOWN/UP 全部消费，不走 Media3 默认路径。
+         *
+         * v3.4.3：PLAY/PAUSE/PLAY_PAUSE 冷启动（timeline 为空）时经快照恢复会话——
+         * 旧行为对空 timeline 是 no-op，上车按播放键什么都不发生。
          */
         override fun onMediaButtonEvent(
             session: MediaSession,
@@ -146,6 +149,20 @@ class PlaybackService : MediaLibraryService() {
             @Suppress("DEPRECATION")
             val ev = intent.getParcelableExtra<KeyEvent>(Intent.EXTRA_KEY_EVENT) ?: return false
             val keyCode = ev.keyCode
+
+            if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY ||
+                keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE ||
+                keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
+            ) {
+                if (ev.action == KeyEvent.ACTION_DOWN && ev.repeatCount == 0) {
+                    val p = session.player
+                    if (p.mediaItemCount == 0) {
+                        CarMusicApp.instance.container.playerManager.playRestoredIfAny(p)
+                    }
+                }
+                return false   // 热路径 play/pause 交回 media3 默认处理
+            }
+
             if (keyCode != KeyEvent.KEYCODE_MEDIA_NEXT && keyCode != KeyEvent.KEYCODE_MEDIA_PREVIOUS) {
                 return false
             }
@@ -166,6 +183,37 @@ class PlaybackService : MediaLibraryService() {
                 else pm.previousOn(fallback)
             }
             return true
+        }
+
+        /**
+         * Auto/媒体浏览器点歌：浏览树条目只有 mediaId 无 URI,media3 默认实现会直接拒绝。
+         * 这里按 mediaId 查收藏/历史得到 Track,解析真实播放 URL 后回填。
+         */
+        override fun onAddMediaItems(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            mediaItems: MutableList<MediaItem>
+        ): ListenableFuture<MutableList<MediaItem>> = serviceScope.future {
+            val container = CarMusicApp.instance.container
+            val db = container.database
+            val resolved = mediaItems.map { item ->
+                if (item.localConfiguration != null) return@map item
+                val trackId = item.mediaId
+                val fav = db.favoriteDao().getAll().find { it.trackId == trackId }
+                val his = if (fav == null) db.historyDao().getRecentFlow(200).first().find { it.trackId == trackId } else null
+                val track = fav?.toTrack() ?: his?.toTrack() ?: return@map null
+                val src = try {
+                    container.sourceManager.getMediaSource(track)
+                } catch (e: com.carmusic.source.SourceUnavailableException) {
+                    null
+                } ?: return@map null
+                MediaItem.Builder()
+                    .setUri(src.url)
+                    .setMediaId(track.trackId)
+                    .setMediaMetadata(item.mediaMetadata)
+                    .build()
+            }
+            resolved.filterNotNull().toMutableList()
         }
     }
 
@@ -207,6 +255,16 @@ class PlaybackService : MediaLibraryService() {
                 .build()
         )
         .build()
+
+    private fun FavoriteEntity.toTrack() = com.carmusic.source.model.Track(
+        platform = platform, id = songId, title = title, artist = artist,
+        album = album, coverUrl = coverUrl, duration = duration, extra = extra
+    )
+
+    private fun HistoryEntity.toTrack() = com.carmusic.source.model.Track(
+        platform = platform, id = songId, title = title, artist = artist,
+        album = album, coverUrl = coverUrl, duration = duration, extra = extra
+    )
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? {
         return mediaSession

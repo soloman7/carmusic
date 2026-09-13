@@ -4,7 +4,9 @@ package com.carmusic.maintenance
  * 死链挂账状态机（纯 Kotlin，无 Android 依赖，便于 JVM 单测）。
  *
  * 安全语义：单曲探测失败 ≠ 死链（可能是弱网/平台抖动），必须连续两个清理周期
- * 都失败才允许删除；首轮失败进挂账（pending），中间恢复可播自动出账。
+ * 都"平台确认无源"才允许删除；首轮失败进挂账（pending），出账两条路：
+ * 下一周期探测可播（[onProbed] true），或两个周期之间播放成功
+ * （PlayerManager 在 STATE_READY 时实时从挂账移除，v3.4.3 起）。
  * 删除决定只能由 [onProbed] 返回 [Decision.DELETE] 给出。
  */
 class DeadTrackLedger(initialPending: Set<String> = emptySet()) {
