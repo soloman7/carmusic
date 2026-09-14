@@ -14,11 +14,15 @@ import java.net.URLEncoder
 
 /**
  * 咪咕音乐 - 中国移动旗下，免费曲库
+ *
+ * v3.4.4: 2026-09 实测 scr_search_tag 搜索端点已上反爬(返回 HTML 挑战页,cookie 无效),
+ * 退出聚合搜索;歌单广场(app.c.nf.migu.cn)与播放链路实测正常,保留。
  */
 class MiguSource(private val client: OkHttpClient) : MusicSource {
 
     override val platform = "migu"
     override val displayName = "咪咕"
+    override val searchEnabled = false
 
     /** 咪咕 URL 常是 "//" 开头的协议相对地址（封面/播放都有），统一补 https: */
     private fun absUrl(url: String?): String? =

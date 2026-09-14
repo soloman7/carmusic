@@ -345,7 +345,9 @@ class QQSource(private val client: OkHttpClient) : MusicSource {
         val result = mutableListOf<Track>()
         tracks.chunked(100).forEach { batch ->
             val playable = probePlayable(batch)
-            result += if (playable == null) batch
+            // v3.4.4: 2026-09 实测 QQ 收紧匿名 vkey——整批 purl 全空(探测请求本身 200)。
+            // 此时"全部过滤"会把 QQ 歌单清空——改为保留整批,播放期走跨平台 fallback 出声
+            result += if (playable == null || playable.isEmpty()) batch
             else batch.filter { (it.extra["songMid"] ?: it.id) in playable }
         }
         return result

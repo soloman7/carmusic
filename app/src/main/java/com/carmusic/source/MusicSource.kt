@@ -16,6 +16,9 @@ interface MusicSource {
     /** 平台显示名 */
     val displayName: String
 
+    /** 是否参与聚合搜索（端点死掉/反爬的平台置 false，省一个 8s 超时位；歌单/播放不受影响） */
+    val searchEnabled: Boolean get() = true
+
     /** 搜索音乐，返回最多 limit 条 */
     suspend fun search(keyword: String, page: Int = 1, limit: Int = 20): List<Track>
 

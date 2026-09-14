@@ -1,6 +1,6 @@
 # 车载音乐 CarMusic
 
-- **车载音乐 CarMusic**：为 BYD 元 PLUS 车机（DiLink / Android 10+）设计的聚合音乐播放 APK。当前版本 v3.4.3。
+- **车载音乐 CarMusic**：为 BYD 元 PLUS 车机（DiLink / Android 10+）设计的聚合音乐播放 APK。当前版本 v3.4.4。
 
 ## 特性
 
@@ -92,8 +92,8 @@ app/src/main/java/com/carmusic/
 | 平台 | 推荐歌单 | 歌单广场 | 备注 |
 |---|---|---|---|
 | 网易云 | 榜单+精品+个性化 | ✅ 分页 | weapi AES+RSA |
-| QQ 音乐 | 18 硬编码榜单 | ✅ 分页 | vkey 预检剔除 VIP |
-| 咪咕 | = 广场首页 | ✅ 分页 | showTags=vip 会员歌预过滤 |
+| QQ 音乐 | 18 硬编码榜单 | ✅ 分页 | 2026-09 QQ 收紧匿名 vkey,取流失效:歌单整批保留,播放走跨平台 fallback |
+| 咪咕 | = 广场首页 | ✅ 分页 | 搜索端点已反爬(退出聚合搜索);歌单/播放正常;showTags=vip 预过滤 |
 | 酷狗 | 9 榜单 | ✅ 分页 | plist/index + special/song |
 | 酷我 | 17 榜单 | ❌ 无匿名广场 API | kbangserver ksong.s |
 | Jamendo | 周/总榜+31 主题 | = 主题精选 | 服务端偶发空返回，已加重试 |

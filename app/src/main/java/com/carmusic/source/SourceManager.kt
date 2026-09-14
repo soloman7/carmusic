@@ -67,7 +67,7 @@ class SourceManager(okHttpClient: OkHttpClient, private val settingsRepository: 
         ApiCache.getOrPut(searchKey(keyword, enabledPlatforms)) {
             coroutineScope {
                 val filtered = enabledPlatforms?.let { en -> sources.filter { it.platform in en } }
-                    ?: sources
+                    ?.filter { it.searchEnabled } ?: sources.filter { it.searchEnabled }
                 var answered = 0
                 val deferreds = filtered.map { source ->
                     async {
@@ -102,7 +102,7 @@ class SourceManager(okHttpClient: OkHttpClient, private val settingsRepository: 
             val key = searchKey(keyword, enabledPlatforms)
             ApiCache.peekFresh(key)?.let { send(it as List<Track>); return@channelFlow }
             val filtered = enabledPlatforms?.let { en -> sources.filter { it.platform in en } }
-                ?: sources
+                ?.filter { it.searchEnabled } ?: sources.filter { it.searchEnabled }
             val collected = mutableListOf<List<Track>>()
             val answered = java.util.concurrent.atomic.AtomicInteger(0)
             coroutineScope {

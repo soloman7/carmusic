@@ -48,4 +48,5 @@
 | 2026-09-07 | v3.4.2 (dry-run) | 车机实测反馈：v3.4.0 检查更新✅、下载✅(走 gh-proxy 加速通道)、点安装被 DiLink 拒绝("多媒体系统不支持该操作")→ 定位为 ACTION_MANAGE_UNKNOWN_APP_SOURCES 授权页与 ACTION_INSTALL_PACKAGE 均被 DiLink 路由拒绝。v3.4.2(code 23) 改 ACTION_VIEW 优先(文件管理器同款路径)并去掉授权页跳转。待 U盘安装 v3.4.2 后再干跑验证安装链路 |
 | 2026-09-07 | v3.4.2 干跑验证 ✅ **更新链路闭环** | 车机 U盘装入 v3.4.2(code 23) 后干跑(24/3.4.3 同包重装)：检查更新✅(update_url=ghproxy.net 包裹 raw,gh-proxy.com 与 raw 直连先后失效)、下载✅(ghproxy.net→dl 分支 7.5MB)、SHA256 校验✅、**立即安装✅(ACTION_VIEW 弹出系统安装器)**、安装完成数据保留。结论:DiLink 应用内更新全链路可用;每周发版=更新 dl 分支 APK+version.json 四字段。注意:raw/github.com release/gh-proxy 均间歇不可用,ghproxy.net 当前可用,治本方案=迁 Gitee(待用户注册) | ZCode |
 | 2026-09-13 | v3.4.3 (code 24) | 功能级审查整改:6 个 P1(驾驶检测hasSpeed误判/媒体键冷启动恢复/Auto点歌/流式搜索负缓存/清理链路不可达回归/广场切平台竞态)。门禁:单测 65/0 ✅ 回归脚本 exit 0(咪咕/QQ 搜索降 warn 待真机复核) ✅ APK SHA256 f117366d…da57d ✅。**本版是应用内更新闭环后的第一次真实交付:车机从 v3.4.2(23) 经检查更新→下载→安装到 24** | ZCode |
+| 2026-09-14 | v3.4.4 (code 25) | 车机用户反馈定位两处平台侧变化:QQ 匿名 vkey 收紧(vkey 四变体全空 purl,取流失效)→歌单预过滤改"整批保留",播放期跨平台 fallback 兜底;咪咕搜索端点反爬(HTML 挑战页)→MusicSource 新增 searchEnabled,咪咕退出聚合搜索(歌单广场实测 30/30 正常,保留)。门禁:单测 65/0 ✅ 回归 exit 0 ✅ SHA256 2a00aa26…5e555 ✅ | ZCode |
 | | | | |
