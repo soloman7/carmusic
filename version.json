@@ -1,7 +1,7 @@
 {
   "versionCode": 25,
   "versionName": "3.4.4",
-  "url": "https://ghproxy.net/https://raw.githubusercontent.com/soloman7/carmusic/dl/carmusic-release.apk",
+  "url": "https://testingcf.jsdelivr.net/gh/soloman7/carmusic@dl/carmusic-release.apk",
   "notes": "v3.4.4:QQ收紧匿名播放(歌改走跨平台播放)；咪咕搜索端点已反爬(退出聚合搜索,歌单/播放保留)",
   "sha256": "2a00aa269ccacb402902c02f2c1ce2b95c6763bee337e75adb32b43519e5e555"
 }
