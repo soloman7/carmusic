@@ -1,8 +1,24 @@
-# 听电台方案 v2(local-first 重构版,2026-09-15)
+# 听电台方案 v2.1(local-first 重构版,2026-09-15)
 
 > v1 被评"调研 A,产品 C+,架构 D"。本版按批判逐条重构:架构从 API-first 反转为 local-first,
 > PlaybackTarget 显式类型化,模式仲裁先写状态机再动手,NSC 决策摆账不喊口号,直播流补全技术规格,
 > 浏览结构砍到三屏,工作量按真实耦合重估。v1 数据结论保留,架构结论全部作废重写。
+>
+> v2.1 增补:对批判的 8 条优化建议逐条对照审计(见"〇"),并把 v2 遗留的两个悬空假设实测关闭
+> (增量同步管道、click 上报端点),方案内不再存在"实现期再确认"的前提。
+
+## 〇、批判对照审计(8 条优化建议 → v2 落点 → 证据)
+
+| # | 批判要求 | v2 落点 | 验证证据 |
+|---|---|---|---|
+| 1 | 改 local-first,CN 全量+全球 top 入 Room,assets 内置,/changed 增量 | D1:seed 3,073 台进 Room,浏览零网络;API=更新器 | seed 实测 1,298KB(gzip ~320KB);`/stations/changed`(200)✅;**v2.1 补验**:changed 缺 url_resolved/lastcheckok → 管道改为 changed(取变更清单)→ `/stations/byuuid` 批量补全(37 字段,含 url_resolved+lastcheckok,200)✅ |
+| 2 | PlaybackTarget 显式类型,五处副作用分发,禁止 startsWith 散落 | D2:sealed Music\|Radio + 五处副作用对照表,M1 工作量重估 1,200 行 | 表中每处副作用标注了 Music/Radio 行为;M1 门禁新增"歌曲链路五处副作用回归测试全绿" |
+| 3 | 先写模式仲裁状态机 | D3:mode∈{MUSIC,RADIO} 持久化、切换、冷启动、方向盘路由、收藏 sortOrder+上下移、单台/空收藏行为全部定义 | 状态机即 D3 全文,M2 动工前置条件 |
+| 4 | 重算 NSC 的账,别口号化 | D4:决策 B(base cleartext 放开),保护对象/代价/可维护性/残余风险四项摆账;"灰显不展示"矛盾修正为正常展示+协议徽标 | CN 损失量化:https-only 砍 36%(2,073→1,326) |
+| 5 | 补直播流规格:LiveConfiguration/首帧预热/断流语义/流量/UA+click | D5 全部落地;重试策略采纳批判版(重查 API→更新库→重试→挂账→跳台),v1 url 互换作废 | **v2.1 补验**:`/json/url/{uuid}` 真实 uuid 上报 200 ok:true ✅ |
+| 6 | M1 砍三屏,countries 砍掉 | 三节产品结构:收藏(默认)/本省/搜索;countries/全球分类移出 M1 | — |
+| 7 | 工作量重估(M1 1200,M2 翻倍) | 五、分期表:M1 ~1,200 行,M2 ~350 行 | — |
+| 8 | 验证体系补车机实网 + 收藏台全集 lastcheckok | 六、验证计划:车机实网=M1 出口必要项(含飞行模式降级验收);回归脚本改收藏台全集复验 | — |
 
 ## 一、调研结论(实测数据,2026-09-15,中国 PC 网络)
 
@@ -13,7 +29,8 @@
 | 中国 | stationcount 2,321;hidebroken 实拉 **2,073 台**,64%(1,326)为 https |
 | API 镜像 | **仅 de1(德国)可达**(400~1400ms);nl1/at1/fi1/all 连接被重置 |
 | seed 包实测 | CN 全量 + 全球 top1000 = **3,073 台,裁剪后 1,298KB JSON(gzip ~320KB)** |
-| 增量端点 | `/json/stations/changed?lastdays=N` 存在(200);实现时需确认返回含 url 字段,缺则回退全量分页 |
+| 增量同步管道 | **两级已验证**:`/stations/changed?lastdays=N`(200,18 字段变更清单,**不含 url_resolved/lastcheckok**)→ `/stations/byuuid?uuids=`(200,37 字段全量,含 url_resolved+lastcheckok)→ upsert。v2"实现期确认"悬空点关闭 |
+| click 上报 | `/json/url/{uuid}` 真实 uuid 实测 **200 ok:true** |
 | 拉流抽测 | CNR-1(HLS)✅、怀集音乐之声(MP3)✅、CCTV-13(HLS 播放列表正常)✅ |
 | 数据质量警示 | CN 的 `state`(省份)字段质量差:`/json/states` 过滤参数无效,社区填写稀疏混乱——**"本省"浏览必须客户端侧容错** |
 | HLS | media3-exoplayer-hls 已在依赖,511 个 CN HLS 台零新依赖可播 |
@@ -26,7 +43,7 @@
 
 - Room 新表 `radio_stations`:**CN 全量(2,073)+ 全球 top 1,000 ≈ 3,100 台**随 APK 内置(`assets/radio_seed.json`,gzip ~320KB),首启导入 Room。
 - 浏览/搜索/分类/收藏**全部查本地**,零网络依赖。等红灯点开电台页 = 一次本地查询,无转圈。
-- 同步:启动延迟任务,距上次同步 >7 天且 API 可达时,`/stations/changed?lastdays=14` 增量 upsert;`lastcheckok=0` → 本地 `hidden=1`(内置包与收藏台共用同一自愈管道,**消灭 v1"精选包静默腐烂"问题**)。API 不可达 → 静默跳过,下个窗口重试,用户无感。
+- 同步:启动延迟任务,距上次同步 >7 天且 API 可达时执行**两级管道**(均实测通过):`/stations/changed?lastdays=14` 取变更清单(轻,18 字段)→ 按 50/批 `/stations/byuuid?uuids=` 补全 37 字段 → upsert(url_resolved/lastcheckok);`lastcheckok=0` → 本地 `hidden=1`(内置包与收藏台共用同一自愈管道,**消灭 v1"精选包静默腐烂"问题**)。API 不可达 → 静默跳过,下个窗口重试,用户无感。
 - 顺带修正 v1 的两个错误概念:①"精选 200 台"是 local-first 的缩水版,直接做全量;②电台点击上报 `/json/url/{uuid}` 采用 fire-and-forget(节流、仅播放时),不污染自己依赖的 topclick 排序。
 
 ### D2 · PlaybackTarget 显式类型,五处副作用按类型分发
@@ -71,6 +88,7 @@ v1"https-only + 灰显不展示"自相矛盾且教条。v2 算账:
 ### D5 · 直播流技术规格(v1 空白处补全)
 
 - **LiveConfiguration**:电台 MediaItem `setLiveConfiguration(targetOffsetMs=10_000, minPlaybackSpeed=0.95, maxPlaybackSpeed=1.02)`——追 live-edge 不漂移、不频繁 rebuffer;歌曲 MediaItem 不设置(点播语义)。
+- **首帧预热**:收藏台数据全在本地(url_resolved 已是解析结果),无需运行时解析;预热做两件事——①进入电台页/起播前,对上次电台的 url_resolved 发 1 字节 Range GET(共享 OkHttp),预热 DNS+TCP+TLS;②连接态 UI 明示"连接中"(车机 4G 冷启 2~10s 是物理现实,不画假进度)。M2 车机实测记录起播耗时基线,超标再调 LoadControl。
 - **缓冲**:ExoPlayer 全局 DefaultLoadControl 保持点播调优;直播起播延迟靠 LiveConfiguration + 连接态 UI 兜(车机 4G 冷启 2~10s,UI 明示"连接中"而非假进度)。
 - **错误语义 = 重新起流,不是同位置 retry**:失败 → 用本地 uuid 重查 API 刷新地址 → 更新 Room → 重试一次 → 仍失败则本地标记 `lastchecked=0` 入复验队列 → 驾驶态自动跳下一收藏台,非驾驶态提示"该台可能已下线"。v1 的"url↔url_resolved 互换"作废:url_resolved 是上次 check 的快照,而 ExoPlayer 本就自动跟 302,两者运行时等价。
 - **流量**:128kbps ≈ 56MB/h。设置页新增"电台码率上限"(不限/128/96/64kbps,过滤本地库);播放卡常显"≈NN MB/小时"。
