@@ -1,7 +1,7 @@
 {
-  "versionCode": 25,
-  "versionName": "3.4.4",
+  "versionCode": 26,
+  "versionName": "3.4.5",
   "url": "https://testingcf.jsdelivr.net/gh/soloman7/carmusic@dl/carmusic-release.apk",
-  "notes": "v3.4.4:QQ收紧匿名播放(歌改走跨平台播放)；咪咕搜索端点已反爬(退出聚合搜索,歌单/播放保留)",
-  "sha256": "2a00aa269ccacb402902c02f2c1ce2b95c6763bee337e75adb32b43519e5e555"
+  "notes": "v3.4.5:内部重构(播放目标类型化,电台功能地基),无新功能",
+  "sha256": "4efe6df2c333ccc9ecfe366ac5ee21c1bbc42b8bc77d4a558d4083c2be302ea4"
 }

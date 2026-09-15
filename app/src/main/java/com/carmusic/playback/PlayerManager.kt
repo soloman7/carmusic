@@ -159,10 +159,16 @@ class PlayerManager(
     private fun connect() {
         // 幂等：已连接或正在连接时跳过（Activity 重建/重进时经 ensureConnected() 反复调用）
         if (controller != null || controllerFuture != null) return
-        val sessionToken = SessionToken(
-            appContext,
-            ComponentName(appContext, PlaybackService::class.java)
-        )
+        // 会话解析失败(异常环境/OEM 裁剪)不再同步炸构造：置空重试,下次 ensureConnected 再试
+        val sessionToken = try {
+            SessionToken(
+                appContext,
+                ComponentName(appContext, PlaybackService::class.java)
+            )
+        } catch (t: Throwable) {
+            Log.e(TAG, "SessionToken resolve failed, will retry on next ensureConnected()", t)
+            return
+        }
         controllerFuture = MediaController.Builder(appContext, sessionToken).buildAsync()
         controllerFuture?.addListener({
             // future 可能以异常完成（服务绑定失败/车机省电限制）：
@@ -184,6 +190,27 @@ class PlayerManager(
     /** controller 是否已连接（PlaybackService 方向盘按键冷启动判备用） */
     val isControllerReady: Boolean get() = controller != null
 
+    /** 播放目标分流入口(v5-D2):电台/音乐副作用在此分叉。internal 供测试与 M1b 驱动。 */
+    internal fun handleTransition(mediaItem: MediaItem?, reason: Int) {
+        // 电台 fence:电台媒体项绝不进入音乐副作用(历史/预载/持久化/SHUFFLE 导航)。
+        // 电台会话语义(最后电台持久化/台名显示)在 M1b 实现。
+        if (PlaybackTarget.isRadioMediaId(mediaItem?.mediaId)) {
+            Log.d(TAG, "radio transition fenced: ${mediaItem?.mediaId}")
+            return
+        }
+        playerListener.handleMusicTransition(mediaItem, reason)
+    }
+
+    /** 播放错误分流入口(v5-D2)。电台 fence:不进音乐重签链(重起流语义 M1b 实现)。 */
+    internal fun handlePlayerError(error: PlaybackException) {
+        if (PlaybackTarget.isRadioMediaId(controller?.currentMediaItem?.mediaId)) {
+            Log.d(TAG, "radio stream error fenced from music retry chain")
+            _error.value = "电台播放中断"
+            return
+        }
+        playerListener.handleMusicPlayerError(error)
+    }
+
     private val playerListener = object : Player.Listener {
         override fun onIsPlayingChanged(playing: Boolean) {
             _isPlaying.value = playing
@@ -191,7 +218,10 @@ class PlayerManager(
             else persistNow()   // 暂停点即存档点（含熄火、导航打断）
         }
 
-        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) = handleTransition(mediaItem, reason)
+
+        // object 内默认可见性:经 playerListener(私有属性,匿名类型类内可知)供 handleTransition 分流
+        fun handleMusicTransition(mediaItem: MediaItem?, reason: Int) {
             val c = controller
             // SHUFFLE 自然播完时 ExoPlayer 会顺序切到下一首，重定向到随机目标
             if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO &&
@@ -240,6 +270,8 @@ class PlayerManager(
         override fun onPlaybackStateChanged(playbackState: Int) {
             if (playbackState == Player.STATE_READY) {
                 _duration.value = controller?.duration ?: 0L
+                // 电台 fence(v5-D2):电台无恢复 seek、无 deadledger 出账(M1b 定义电台就绪语义)
+                if (PlaybackTarget.isRadioMediaId(controller?.currentMediaItem?.mediaId)) return
                 // 播放成功 = 该曲目绝不是死链：实时从清理挂账出账
                 // （把 DeadTrackLedger 注释宣称的"恢复播放自动出账"从宣称变成真实路径）
                 clearPendingDead(_currentTrack.value?.trackId)
@@ -259,7 +291,9 @@ class PlayerManager(
             }
         }
 
-        override fun onPlayerError(error: PlaybackException) {
+        override fun onPlayerError(error: PlaybackException) = handlePlayerError(error)
+
+        fun handleMusicPlayerError(error: PlaybackException) {
             Log.e(TAG, "playback error: ${error.message}", error)
             val track = _currentTrack.value
             // 切歌则重置计数
@@ -619,7 +653,8 @@ class PlayerManager(
     }
 
     /** Track + 已解析音源 → MediaItem（登记进 trackRegistry，供 transition 回调查 Track） */
-    private fun buildMediaItem(t: Track, source: MediaSource): MediaItem {
+    // internal:PlayerTransitionFenceTest 需要与生产同路径构建音乐 mediaId
+    internal fun buildMediaItem(t: Track, source: MediaSource): MediaItem {
         trackRegistry[t.trackId] = t
         return MediaItem.Builder()
             .setUri(source.url)
@@ -639,6 +674,8 @@ class PlayerManager(
     private fun schedulePreloadNext() {
         preloadJob?.cancel()
         preloadJob = scope.launch(Dispatchers.IO) {
+            // 电台 fence(v5-D2):直播流无"下一首",音乐预签链禁止接触电台媒体项
+            if (PlaybackTarget.isRadioMediaId(controller?.currentMediaItem?.mediaId)) return@launch
             val q = _queue.value
             val cur = _currentTrack.value ?: return@launch
             val idx = q.indexOfFirst { it.trackId == cur.trackId }
@@ -685,6 +722,8 @@ class PlayerManager(
     /** 当前队列 + 索引 + 进度写 playback_state（单行覆盖）。timeline 为空时不写，避免覆盖有效存档。 */
     private fun persistNow() {
         val c = controller ?: return
+        // 电台 fence(v5-D2):电台绝不写入音乐存档(队列/索引/进度);电台会话持久化在 M1b
+        if (PlaybackTarget.isRadioMediaId(c.currentMediaItem?.mediaId)) return
         val q = _queue.value
         if (c.mediaItemCount == 0 || q.isEmpty()) return
         val index = c.currentMediaItemIndex.coerceIn(0, q.size - 1)

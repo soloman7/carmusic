@@ -1,6 +1,6 @@
 # 车载音乐 CarMusic
 
-- **车载音乐 CarMusic**：为 BYD 元 PLUS 车机（DiLink / Android 10+）设计的聚合音乐播放 APK。当前版本 v3.4.4。
+- **车载音乐 CarMusic**：为 BYD 元 PLUS 车机（DiLink / Android 10+）设计的聚合音乐播放 APK。当前版本 v3.4.5。
 
 ## 特性
 
