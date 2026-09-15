@@ -1,138 +1,131 @@
-# 听电台方案 v2.1(local-first 重构版,2026-09-15)
+# 听电台方案 v3(local-first 定稿版,2026-09-15)
 
-> v1 被评"调研 A,产品 C+,架构 D"。本版按批判逐条重构:架构从 API-first 反转为 local-first,
-> PlaybackTarget 显式类型化,模式仲裁先写状态机再动手,NSC 决策摆账不喊口号,直播流补全技术规格,
-> 浏览结构砍到三屏,工作量按真实耦合重估。v1 数据结论保留,架构结论全部作废重写。
+> v3 缘起:外部审查用 `reverse=true` + 时间戳断言证明 v2.1 的同步地基 `/stations/changed` 已冻结
+> 243 天(de1/de2 同一秒,上游死,非镜像问题)——而我 v2.1 的"补验"只看了 200 状态码和字段存在性,
+> 对同一响应里的 `lastchangetime=2026-01-14` 视而不见。**验证纪律错误第三次复发,本轮制度化终结**:
+> 自 v3 起,外部端点探针必须断言语义不变量(字段存在性/时间新鲜度/单调性),审计证据只接受脚本断言
+> 输出,不接受 ✅ 与状态码;禁止对生产写端点做测试(v2.1 用真实 uuid 测 click 上报,向 topclick 注入了
+> 一次假点击——教训登记)。
 >
-> v2.1 增补:对批判的 8 条优化建议逐条对照审计(见"〇"),并把 v2 遗留的两个悬空假设实测关闭
-> (增量同步管道、click 上报端点),方案内不再存在"实现期再确认"的前提。
+> 批判 8 条修复全部采纳;同步管道推倒重写;M1 拆分采纳;文档内不再有两套互相矛盾的同步设计。
 
-## 〇、批判对照审计(8 条优化建议 → v2 落点 → 证据)
+## 〇、v3 探针记录(全部带语义断言,2026-09-15,可复现)
 
-| # | 批判要求 | v2 落点 | 验证证据 |
+| 探针 | 断言 | 结果 |
+|---|---|---|
+| 七镜像扫描 | 至少一个镜像可用 | de1(1.9s)✅ **de2(3.6s)✅**;all/fr1/fi1/nl1/at1 全灭 → v2"仅 de1 可达"确认为过期快照 |
+| changed 语义新鲜度(双镜像) | 最新 lastchangetime 距今 < 14 天 | **断言失败:243 天**,de1/de2 同一秒(2026-01-14T22:54:03Z)→ 上游冻结,该端点对同步不可用 |
+| byuuid 丢弃语义 | 2 真 + 1 假 uuid → 返回 2 条 | ✅ 通过:未知 uuid 静默丢弃 → **唯一的墓碑信号源** |
+| search 字段存在性 | lastcheckok/bitrate/url_resolved/codec/state/tags ∈ keys | ✅ 全在 → 全量重拉的字段基础成立 |
+
+## 一、审计表(第三轮批判 → v3 落点 → 证据)
+
+| # | 批判要求 | v3 落点 | 证据 |
 |---|---|---|---|
-| 1 | 改 local-first,CN 全量+全球 top 入 Room,assets 内置,/changed 增量 | D1:seed 3,073 台进 Room,浏览零网络;API=更新器 | seed 实测 1,298KB(gzip ~320KB);`/stations/changed`(200)✅;**v2.1 补验**:changed 缺 url_resolved/lastcheckok → 管道改为 changed(取变更清单)→ `/stations/byuuid` 批量补全(37 字段,含 url_resolved+lastcheckok,200)✅ |
-| 2 | PlaybackTarget 显式类型,五处副作用分发,禁止 startsWith 散落 | D2:sealed Music\|Radio + 五处副作用对照表,M1 工作量重估 1,200 行 | 表中每处副作用标注了 Music/Radio 行为;M1 门禁新增"歌曲链路五处副作用回归测试全绿" |
-| 3 | 先写模式仲裁状态机 | D3:mode∈{MUSIC,RADIO} 持久化、切换、冷启动、方向盘路由、收藏 sortOrder+上下移、单台/空收藏行为全部定义 | 状态机即 D3 全文,M2 动工前置条件 |
-| 4 | 重算 NSC 的账,别口号化 | D4:决策 B(base cleartext 放开),保护对象/代价/可维护性/残余风险四项摆账;"灰显不展示"矛盾修正为正常展示+协议徽标 | CN 损失量化:https-only 砍 36%(2,073→1,326) |
-| 5 | 补直播流规格:LiveConfiguration/首帧预热/断流语义/流量/UA+click | D5 全部落地;重试策略采纳批判版(重查 API→更新库→重试→挂账→跳台),v1 url 互换作废 | **v2.1 补验**:`/json/url/{uuid}` 真实 uuid 上报 200 ok:true ✅ |
-| 6 | M1 砍三屏,countries 砍掉 | 三节产品结构:收藏(默认)/本省/搜索;countries/全球分类移出 M1 | — |
-| 7 | 工作量重估(M1 1200,M2 翻倍) | 五、分期表:M1 ~1,200 行,M2 ~350 行 | — |
-| 8 | 验证体系补车机实网 + 收藏台全集 lastcheckok | 六、验证计划:车机实网=M1 出口必要项(含飞行模式降级验收);回归脚本改收藏台全集复验 | — |
+| 1 | 同步推倒重来:全量重拉 + 客户端 diff,弃 changed/byuuid-in-sync | D1 重写 | 两查询端点字段实测齐全(〇表);成本 ~1.5MB gzip/周 |
+| 2 | 镜像轮转取代 de1 硬编码 | §四:候选列表 + 5s 超时 + last-known-good 置前;"仅 de1"降级为带日期的观测 | 〇表:de2 当日存活 |
+| 3 | seed 新鲜度规则 + 单测 | §四:insert-if-absent;hidden/lastcheckok/url/url_resolved 永不接受 seed 降级 | 单测清单新增"seed 降级冲突""墓碑逻辑"两条 |
+| 4 | D5 错误路径本地优先 + 超时预算 | D5 重写:本地 url 重起流(1s 退避)→ hidden 挂账 → 跳台;API 重查仅存在于后台复验;任何恢复路径上的 API 调用 3s 硬超时 | v2.1 审计表曾误标此条为"批判版"——本轮如实修正 |
+| 5 | D3 两处修正 | 冷启动 RADIO 恢复改为**只读不播**(与音乐侧 PlayerManager"只读不播"铁律对齐,显式动作才出声);收藏 0 台 NEXT → 回退最后收听台/本省头部 + toast,不再静默 no-op | — |
+| 6 | 文档内两套同步设计合一 | §四旧文(两级管道)整段删除,§四 = D1 唯一权威 | — |
+| 7 | 探针断言语义制度化 | 本文头部规矩 + §六:字段存在性/新鲜度(<14 天)/单调性断言;证据只收脚本输出;禁写端点测试 | 〇表即示范 |
+| 8 | M1 拆 M1a/M1b;码率改名+未知码率规格;导入 UX | 六、分期:M1a(PlaybackTarget 独立发版)/M1b(电台);码率设置改名"只显示 ≤N kbps 的电台",bitrate=0 = 放行 + 显示"码率未知"(MB/h 显示"—");首启导入骨架态/失败重试/完成前不进崩溃路径 | — |
 
-## 一、调研结论(实测数据,2026-09-15,中国 PC 网络)
+## 二、调研结论(实测数据;镜像与端点状态均为 2026-09-15 快照,非架构常量)
 
 | 项 | 数值 |
 |---|---|
 | 项目 | RadioBrowser(radio-browser.info),服务端开源,免费 API 无 Key |
-| 全库 | 58,576 台,6,389 标记失效 → **~52,000 可用**;242 国 |
-| 中国 | stationcount 2,321;hidebroken 实拉 **2,073 台**,64%(1,326)为 https |
-| API 镜像 | **仅 de1(德国)可达**(400~1400ms);nl1/at1/fi1/all 连接被重置 |
-| seed 包实测 | CN 全量 + 全球 top1000 = **3,073 台,裁剪后 1,298KB JSON(gzip ~320KB)** |
-| 增量同步管道 | **两级已验证**:`/stations/changed?lastdays=N`(200,18 字段变更清单,**不含 url_resolved/lastcheckok**)→ `/stations/byuuid?uuids=`(200,37 字段全量,含 url_resolved+lastcheckok)→ upsert。v2"实现期确认"悬空点关闭 |
-| click 上报 | `/json/url/{uuid}` 真实 uuid 实测 **200 ok:true** |
-| 拉流抽测 | CNR-1(HLS)✅、怀集音乐之声(MP3)✅、CCTV-13(HLS 播放列表正常)✅ |
-| 数据质量警示 | CN 的 `state`(省份)字段质量差:`/json/states` 过滤参数无效,社区填写稀疏混乱——**"本省"浏览必须客户端侧容错** |
-| HLS | media3-exoplayer-hls 已在依赖,511 个 CN HLS 台零新依赖可播 |
+| 全库 | 58,585 台(当日 de2 stats),~52,000 可用;242 国 |
+| 中国 | hidebroken 实拉 2,073 台,64% https;不带 hidebroken 全量 = 2,321(同步用,含失效标记) |
+| 镜像 | 当日可达:de1(1.9s)/de2(3.6s);其余全灭。**架构采用轮转,不硬编码任何单镜像** |
+| changed 端点 | **冻结 243 天,同步禁用**(〇表 B) |
+| byuuid | 37 字段全量,**静默丢弃未知 uuid** → 仅用于收藏台批量复验(必须 diff 进出 uuid 集) |
+| seed 包 | 3,073 台 / 1,298KB JSON(gzip ~320KB),字段裁剪后含全部同步所需 |
+| 拉流抽测 | CNR-1(HLS)/怀集音乐之声(MP3)/CCTV-13(HLS)✅ |
+| state 字段 | 质量差("/json/states"过滤参数无效)→ 本省浏览客户端三路并集容错(沿用 v2) |
+| HLS | media3-exoplayer-hls 已在依赖,511 个 CN HLS 台零新依赖 |
 
-**未验证且 v2 不再掩盖**:de1 在车机蜂窝网络下的可达性(4G 路径与 PC 不同)。local-first 架构使它从"产品生死"降级为"数据新鲜度"——这正是重构的意义。
+## 三、架构决策
 
-## 二、架构决策
+### D1 · 同步 = 全量重拉 + 客户端 diff(增量方案废弃)
 
-### D1 · local-first:数据搬回家,API 只是更新器
-
-- Room 新表 `radio_stations`:**CN 全量(2,073)+ 全球 top 1,000 ≈ 3,100 台**随 APK 内置(`assets/radio_seed.json`,gzip ~320KB),首启导入 Room。
-- 浏览/搜索/分类/收藏**全部查本地**,零网络依赖。等红灯点开电台页 = 一次本地查询,无转圈。
-- 同步:启动延迟任务,距上次同步 >7 天且 API 可达时执行**两级管道**(均实测通过):`/stations/changed?lastdays=14` 取变更清单(轻,18 字段)→ 按 50/批 `/stations/byuuid?uuids=` 补全 37 字段 → upsert(url_resolved/lastcheckok);`lastcheckok=0` → 本地 `hidden=1`(内置包与收藏台共用同一自愈管道,**消灭 v1"精选包静默腐烂"问题**)。API 不可达 → 静默跳过,下个窗口重试,用户无感。
-- 顺带修正 v1 的两个错误概念:①"精选 200 台"是 local-first 的缩水版,直接做全量;②电台点击上报 `/json/url/{uuid}` 采用 fire-and-forget(节流、仅播放时),不污染自己依赖的 topclick 排序。
-
-### D2 · PlaybackTarget 显式类型,五处副作用按类型分发
-
-`sealed class PlaybackTarget { Music(track) | Radio(station) }`,PlayerManager 内的隐式假设收敛为显式分支,**禁止 `mediaId.startsWith("radio:")` 散落判断**:
-
-| 副作用点 | Music | Radio |
-|---|---|---|
-| `onMediaItemTransition` → history 写入 | ✅ | ❌ 跳过(电台不污染音乐历史) |
-| `schedulePreloadNext` | ✅ | ❌ 跳过(直播流无"下一首") |
-| `onPlayerError` → refreshAndRetry(音乐重签链) | ✅ | ❌ 走电台重起流语义(见 D5) |
-| `persistNow`(onIsPlayingChanged/transition 两入口) | 队列+进度 | 只写"最后电台"(单行,无进度) |
-| DeadTrackLedger 出账(STATE_READY 钩子) | ✅ | ❌ 跳过 |
-
-`restoredSnapshot` 恢复逻辑按 target 类型分流;电台不进 `trackRegistry` 的音乐语义区(登记表加类型字段或旁路表)。**工作量按此重估,不再是"一个 playRadio 函数"。**
-
-### D3 · 模式仲裁状态机(M2 动工前定死,不即兴)
+第一性原理:语料仅 ~3.1k 台,全量重拉 ~1.5MB gzip/周——"增量"省下的流量趋近于零,却引入死端点 + 字段残缺 + 无墓碑三连坑。**同步机制的正确性权重远高于流量效率**。
 
 ```
-mode ∈ {MUSIC, RADIO},持久化于 DataStore(lastPlaybackMode)
-切换:用户播歌 → MUSIC;用户选台 → RADIO;手动切换即时生效
-方向盘 NEXT/PREV:MUSIC → QueueNavigator;RADIO → 收藏台循环(按 sortOrder)
-方向盘 PLAY/PAUSE:当前 mode 内 toggle;冷启动(进程被杀):
-  mode=MUSIC → 现有快照恢复链;mode=RADIO → 自动起播最后收听的台
-点歌/选台的"自动回语义"不存在歧义:最后一次用户主动选择即当前 mode
+周期任务(距上次 >7 天 && 避让播放 && 镜像轮转可用):
+  a. GET /stations/search?countrycode=CN            ← 不带 hidebroken,全字段(实测含 lastcheckok/bitrate/url_resolved)
+  b. GET /stations/topvote?limit=1000&hidebroken=true
+  c. 客户端 diff:
+     upsert a∪b 全字段;
+     lastcheckok=0 → hidden=1;lastcheckok=1 → hidden=0(恢复自动解隐);
+     本地存在但 a∪b 中消失的 uuid → hidden=1(墓碑,补齐删除语义)
+  d. 事务提交;同步成功与否不阻塞任何 UI
 ```
 
-- **收藏台排序**:显式 `sortOrder` 整数列 + 台目详情里"上移/下移"按钮(车机无拖拽)。新收藏追加末尾。
-- **收藏 1 台**:NEXT = 本台重新起流(等效"重连",直播流语义下合理)。
-- **收藏 0 台**:RADIO 循环 no-op;电台页默认落在"本省"页引导收藏。
-- **冷启动直接按方向盘键**:沿用 v3.4.3 的 playRestoredIfAny 链,RADIO mode 下起播最后电台。
+changed/byuuid **从同步管道中删除**。byuuid 仅保留给"收藏台后台复验":批量 uuids= 查询 → **diff 输入/输出 uuid 集**,缺失者 = 已从数据库删除 → 墓碑 hidden。
 
-### D4 · NSC 决策:放开 base cleartext(B 方案),把账摆在明面
+### D2 · PlaybackTarget 显式类型(维持 v2,补充拆分)
 
-v1"https-only + 灰显不展示"自相矛盾且教条。v2 算账:
+sealed `PlaybackTarget { Music | Radio }`,五处副作用(history/preload/重签链/persist 两入口/deadledger)按类型分发,禁止 startsWith 散落。**M1a 独立发版**:类型化改造 + 五处副作用单测 + 歌曲链路全回归先行落地,电台代码只在无回归地基上进场。
 
-- **保护对象**:公共广播音频流。无凭据、无个人数据、内容本身免费公开——机密性/完整性价值 ≈ 0。
-- **代价**:https-only 砍掉 36% 中国台(2,073 → 1,326),砍掉的恰是地市交通台/本地新闻台——车载电台的核心价值。
-- **可维护性**:几千个电台随机域名,NSC domain-config 白名单路线不可维护(v1"后续按域加白"走不通,作废)。
-- **决策**:采用 B——`base-config cleartextTrafficPermitted="true"`,http 台正常展示(协议仅作徽标,不灰显不隐藏)。代码层纪律不变:所有 API 调用保持 https 字面量,UpdateManager 已强制更新链路 https。**残余风险如实登记**:车载蜂窝网络中间人可注入/篡改广播音频流——攻击价值趋近于零,私家自装 APK 威胁模型下可接受。音乐流 CDN 既有白名单保留(无害冗余)。
+### D3 · 模式仲裁(v3 修正两处)
 
-### D5 · 直播流技术规格(v1 空白处补全)
+- mode ∈ {MUSIC, RADIO},持久化;切换/方向盘路由维持 v2。
+- **冷启动修正**:无论 MUSIC/RADIO,进程启动一律**只读不播**(与音乐侧"只读不播:等用户点播放"铁律对齐——进程启动 ≠ 用户意图,车内自动出声是惊吓)。RADIO 恢复出声仅由显式动作触发:方向盘 PLAY(经 playRestoredIfAny 同款链)/用户点台。
+- **收藏 0 台**:NEXT 回退到"最后收听的台"(无则本省列表头部)+ toast"暂无收藏,已为你打开 XX 台",不再是驾驶态死按钮。
+- 收藏排序 sortOrder + 上下移;收藏 1 台 NEXT = 重新起流。维持 v2。
 
-- **LiveConfiguration**:电台 MediaItem `setLiveConfiguration(targetOffsetMs=10_000, minPlaybackSpeed=0.95, maxPlaybackSpeed=1.02)`——追 live-edge 不漂移、不频繁 rebuffer;歌曲 MediaItem 不设置(点播语义)。
-- **首帧预热**:收藏台数据全在本地(url_resolved 已是解析结果),无需运行时解析;预热做两件事——①进入电台页/起播前,对上次电台的 url_resolved 发 1 字节 Range GET(共享 OkHttp),预热 DNS+TCP+TLS;②连接态 UI 明示"连接中"(车机 4G 冷启 2~10s 是物理现实,不画假进度)。M2 车机实测记录起播耗时基线,超标再调 LoadControl。
-- **缓冲**:ExoPlayer 全局 DefaultLoadControl 保持点播调优;直播起播延迟靠 LiveConfiguration + 连接态 UI 兜(车机 4G 冷启 2~10s,UI 明示"连接中"而非假进度)。
-- **错误语义 = 重新起流,不是同位置 retry**:失败 → 用本地 uuid 重查 API 刷新地址 → 更新 Room → 重试一次 → 仍失败则本地标记 `lastchecked=0` 入复验队列 → 驾驶态自动跳下一收藏台,非驾驶态提示"该台可能已下线"。v1 的"url↔url_resolved 互换"作废:url_resolved 是上次 check 的快照,而 ExoPlayer 本就自动跟 302,两者运行时等价。
-- **流量**:128kbps ≈ 56MB/h。设置页新增"电台码率上限"(不限/128/96/64kbps,过滤本地库);播放卡常显"≈NN MB/小时"。
-- **UA**:全局统一 `carmusic/<version>`(BuildConfig.UA,API 与 OkHttpDataSource 已统一),符合 RadioBrowser 可识别 UA 要求。
-- **click 上报**:起播成功后 GET `/json/url/{uuid}`,fire-and-forget、每台每小时最多一次。
+### D4 · NSC 决策 B(维持 v2 摆账结论)
 
-## 三、产品设计(M1 三屏封顶)
+base-config 放开 cleartext;http 台正常展示 + 协议徽标。理由与残余风险登记见 v2,无变化。
 
-1. **收藏(默认页)**:排序可调,空态引导。
-2. **本省**:省份选择器 = **GPS 最近质心自动推荐**(内置 34 省质心表,离线)+ 手动改;列表 = 本地库 `state` 字段过滤 ∪ 台名/tag 包含省名匹配(容忍脏数据,并集去重)。countries/全球分类整个砍掉,全球热门降级为搜索页一个入口。
-3. **搜索**:台名关键字,本地 LIKE。驾驶态(`isDriving=true`)下搜索框隐藏——等红灯时检测器仍判定驾驶,这是有意的保守(电台台名输入比歌曲搜索更依赖打字,盲操作不可行);语音整合依赖 DiLink 语音助手开放能力,M3 前不动,先如实标注 out-of-scope。
+### D5 · 直播流规格(v3 修正)
 
-**布局修正**:废除 v1"左侧列表+右侧常驻收听卡"的桌面双栏,改为全宽列表 + 底部 compact 收听条(LIVE 徽标 / 台名 / codec·码率 / ≈MB/h / 停止)。入口:PlayerScreen 控制排 + DriveModeScreen 大按钮(M2)。
+- **错误恢复 = 本地优先,关键路径零 API**:
+  `失败 → 本地 url 重新起流一次(1s 退避)→ 仍败 → 本地 hidden 挂账 + 驾驶态自动跳下一收藏台 / 非驾驶态提示"该台可能已下线"`。
+  API 刷新只发生在后台复验任务(周一类周期管道)。恢复路径上若出现任何 API 调用,一律 3s 硬超时,超时即走本地兜底。理由:播放失败时刻 = 网络最烂时刻,跨国 API 不属于驾驶时的恢复路径。
+- **LiveConfiguration 限定 HLS/DASH**(`targetOffsetMs=10s, minSpeed=0.95, maxSpeed=1.02`);progressive 流(ICY MP3/AAC,CN 大头)上是 no-op——其体验主力 = 缓冲参数 + 断流重连语义,预期不放错位置。
+- **码率**:设置项定名"**只显示 ≤N kbps 的电台**"(如实描述过滤语义);bitrate=0(未知)= 放行 + 列表显示"码率未知",播放卡 MB/h 显示"—"。
+- **首帧预热**(v2.1 增补,维持):进电台页对上次电台 url_resolved 发 1 字节 Range GET 预热;连接态明示。
+- **click 上报**:仅运行时 fire-and-forget(每台每小时 ≤1 次);**禁止对写端点做开发期测试**(v2.1 教训)。
+- **首启导入 UX**:导入期间电台页骨架态;失败(资产损坏/磁盘满)落错误态 + 重试按钮;导入完成前电台入口不进崩溃路径。
 
-## 四、数据与同步规格
+## 四、数据与同步规格(单一权威 = D1,与代码实现一一对应)
 
-- Room 4→5:`radio_stations`(uuid 主键,`hidden` 标记,索引:country/state/name;name 查询 3.1k 行 LIKE 无压力)+ `radio_favorites`(uuid 主键,`sortOrder`,`addedAt`)。schema JSON 照例入库。
-- seed 版本化:assets 内 `radio_seed.meta.json`(日期+台数),导入幂等(按 stationuuid upsert)。
-- 增量同步:`/stations/changed?lastdays=14` → upsert(url/name/lastcheckok 等);实现时若该端点响应缺 url 字段,回退为"全量分页重拉 CN+top"并写进注释。同步与收藏台复验共用同一延迟任务,全程避让播放(复用 awaitNotPlaying 带超时的既有模式)。
+- Room 4→5:`radio_stations`(uuid 主键 + `hidden`,索引 country/state/name)+ `radio_favorites`(uuid 主键 + sortOrder + addedAt)。
+- **seed 新鲜度规则**:seed 导入 = insert-if-absent;**hidden/lastcheckok/url/url_resolved 永不接受 seed 降级**(App 更新自带旧快照,不得覆盖同步刷过的新数据)。单测锁定:旧 seed upsert 后,同步过的失效台不得复活。
+- **镜像轮转**:候选 `[de1, de2, all, fr1, fi1, nl1, at1]`,单镜像 5s 超时,last-known-good 排前;全灭 → 静默放弃本轮。镜像结论只以"截至 X 日观测"形式记录,不写进架构。
 
-## 五、分期与工作量(v2 重估)
+## 五、产品设计(三屏,维持 v2 + 修正)
+
+收藏(默认页,0 收藏引导)/ 本省(GPS 最近质心 34 条目表 + 手动改;state∪台名∪tag 并集去重)/ 搜索(本地 LIKE;isDriving 隐藏)。全宽列表 + 底部 compact 收听条(LIVE 徽标/台名/codec·码率或"码率未知"/≈MB/h 或"—"/停止)。入口:PlayerScreen 控制排 + DriveModeScreen 大按钮(M2)。
+
+## 六、分期(v3:M1 拆分落地)
 
 | 阶段 | 内容 | 规模 |
 |---|---|---|
-| M1 核心可用 | Room 迁移+seed 导入+同步器;PlaybackTarget 类型化改造(动 PlayerManager 五处);电台三屏 UI+收听条;播放/错误语义/流量显示;NSC B | **~1,200 行** + 2 表 + seed 资产 |
-| M2 驾驶与仲裁 | 模式仲裁状态机落地(冷启动/方向盘路由);DriveMode 电台大按钮;收藏排序上下移;会话恢复(最后电台) | **~350 行** |
-| M3 自愈与扩展 | 收藏台 lastcheckok 周期复验(挂账复用);Auto 浏览树电台节点;tag 分类页(按需) | ~250 行 |
+| **M1a** | PlaybackTarget 类型化 + 五处副作用分发单测 + 歌曲链路全回归,**独立发版** | ~500 行 |
+| **M1b** | Room 4→5 + seed 导入(新鲜度规则)+ 全量 diff 同步器 + 镜像轮转 + 三屏 UI + 播放/错误/码率/导入 UX + NSC B | ~700 行 |
+| M2 | 模式仲裁落地(冷启动只读恢复/方向盘路由/0 收藏回退)+ DriveMode 大按钮 + 收藏排序 | ~350 行 |
+| M3 | 收藏台后台复验(byuuid + uuid diff 墓碑)+ Auto 浏览树电台节点 | ~250 行 |
 
-## 六、验证计划
+## 七、验证计划
 
-- **PC 探针固化** `test_radio_api.py`:de1 健康、CN 台数、seed 一致性、抽 5 台拉流——定位是"数据生产侧"验证,**不宣称覆盖车机网络**(v1 的错)。
-- **车机实网 = M1 出口必要项**:de1 同步是否成功、本地浏览零网络可用性(飞行模式开电台页)、3 台实播(含 1 HLS)、断流恢复(开关飞行模式)、流量读数合理性。de1 车机不可达时功能仍须完整可用(这正是 local-first 的验收标准)。
-- **单测**:seed 导入幂等/字段容错;PlaybackTarget 五处分发(电台不写历史/不预载/不进 ledger);收藏循环边界(0/1/N 台);省份匹配并集去重;码率过滤。
-- **回归扩展**:收藏台全集跑 lastcheckok 复验(本地库驱动),替代 v1 的"固定 5 台"一次性快照。
+- **探针纪律(制度化,适用于本项目一切外部端点)**:每条探针必须断言语义不变量——字段存在性、时间新鲜度(<14 天)、单调性(reverse 首行 ≥ 末行);证据只收脚本断言输出;写端点禁测。〇表为范例。
+- **PC 回归** `test_radio_api.py`:镜像轮转可达性(断言 ≥1 存活)、search 字段断言、CN 台数下限、抽 5 台拉流;**收藏台全集 lastcheckok 复验**(本地库驱动,替代固定 5 台)。
+- **单测**:seed 降级冲突(旧 seed 不覆盖同步数据)、墓碑(消失 uuid → hidden;byuuid diff 缺失 → hidden)、diff 三态(lastcheckok 0/1/消失)、五处副作用按类型分发、收藏循环 0/1/N 台、0 收藏回退、省份并集去重、码率过滤含 bitrate=0。
+- **车机实网 = M1b 出口必要项**:镜像轮转同步成功一次、飞行模式下电台页完整可用(降级验收)、3 台实播(含 1 HLS)、**20 分钟长播**(验断流→重起流——5 秒抽样测不出服务器踢长连接)、断流恢复、流量读数合理性。
 
-## 七、风险登记
+## 八、风险登记
 
 | 风险 | 等级 | 对策 |
 |---|---|---|
-| de1 车机不可达 | 中(已降级) | local-first:仅影响数据新鲜度,功能完整可用;seed 内置 |
-| CN state 字段脏 | 中 | 省份匹配 = state∪名称∪tag 并集;选择器可手动改;实测后必要时改为"城市 tag"方案 |
-| 电台普遍失效(全库 11%) | 中 | hidebroken 过滤 + 增量同步 hidden 标记 + 播放失败自动跳下一收藏台 |
-| PlayerManager 类型化改造引入歌曲回归 | 中 | 单测锁定五处副作用;车机冒烟歌曲链路全过 |
-| 明文流 NSC 放开 | 低(已算账) | D4 决策记录;API 层代码纪律不变 |
-| 语音搜台(驾驶态刚需) | 已知缺口 | 依赖 DiLink 语音能力,M3 前不动,如实标注 |
+| 全部镜像被墙(极端) | 低 | seed 本地全量,功能完整可用;同步静默失败下窗口重试 |
+| state 字段脏 | 中 | 三路并集容错 + 手动选省;必要时改"城市 tag"方案 |
+| 电台普遍失效(11%) | 中 | 全量 diff 自动 hidden/复活;播放失败本地挂账 + 跳台 |
+| M1a 类型化改造回归歌曲链路 | 中 | 五处副作用单测 + 歌曲全回归门禁,独立发版隔离风险 |
+| 镜像集合随时间漂移 | 低 | 轮转 + last-known-good;镜像列表做成可远程更新常量(下一步可经 version.json 下发) |
+| 语音搜台 | 已知缺口 | 依赖 DiLink 语音能力,M3 前不动,如实标注 |
 
-—— v2 完稿。M1 待批准动工,照旧:每步验证、门禁全绿、应用内更新交付。
+—— v3 定稿:批判第三节 1~7 全部落地,探针断言制度化,文档内单一同步设计。M1a 可批。
