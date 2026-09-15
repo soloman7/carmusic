@@ -19,9 +19,24 @@ sealed class PlaybackTarget {
 
     companion object {
         const val RADIO_MEDIA_ID_PREFIX = "radio:"
+        const val RADIO_ERROR_MAX_RETRY = 1
 
         /** 唯一的电台 mediaId 判定点 */
         fun isRadioMediaId(mediaId: String?): Boolean =
             mediaId != null && mediaId.startsWith(RADIO_MEDIA_ID_PREFIX)
     }
+}
+
+
+/** 收听条状态(UI 观察;电台播放中 _currentTrack 为空,以此为准) */
+data class RadioNowPlaying(
+    val uuid: String,
+    val name: String,
+    val codec: String,
+    val bitrate: Int
+) {
+    val displayBitrate: String get() = if (bitrate > 0) "${codec.ifBlank { "?" }}·${bitrate}kbps" else "码率未知"
+
+    /** 连续流流量估算;bitrate=0(未知)返回 null 显示"—" */
+    val mbPerHour: Double? get() = if (bitrate > 0) bitrate / 8.0 * 3600 / 1024 / 1024 else null
 }

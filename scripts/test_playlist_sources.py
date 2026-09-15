@@ -528,6 +528,9 @@ def test_search():
 # 已知可接受、不拦截发版的失效项 (platform, item)。填写必须有据可查（接口已死且无法替代等），
 # 并同步标注到 README 的歌单覆盖表。
 WARN_ITEMS = {
+    # 电台数据生产侧:local-first 下 API 不可达不影响 App 功能(seed 兜底),可见但不拦截
+    ("电台API", "镜像可达"), ("电台API", "changed新鲜度"),
+    ("电台API", "CN语料完整性"), ("电台API", "拉流抽查"),
     # 咪咕 m.music.migu.cn 搜索端点 2026-09-13 实测返回反爬 HTML(歌单/曲目/播放链路正常),待真机复核
     ("搜索", "咪咕"),
     # QQ musicu.fly 搜索 2026-09-13 PC 侧 404(vkey/歌单/播放链路正常,疑似 IP 区域差异),待真机复核
@@ -551,6 +554,10 @@ def main():
     all_res["Jamendo"] = test_jamendo()
     time.sleep(1)
     all_res["搜索"] = test_search()
+    time.sleep(1)
+    sys.path.insert(0, "scripts")
+    import test_radio_api
+    all_res["电台API"] = test_radio_api.test_radio()
     print()
     print("=" * 60)
     print("【GdStudio】纯 fallback 解析器，无歌单功能，跳过")

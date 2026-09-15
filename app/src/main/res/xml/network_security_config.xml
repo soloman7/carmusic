@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <base-config cleartextTrafficPermitted="false" />
+    <!-- v3.5 决策 B(RADIO_PLAN v5-D4):电台流大量为 http(公开广播,无保护对象),
+         base 放开明文;音乐 API 侧代码纪律不变(全部 https 字面量),原 domain-config 保留为冗余 -->
+    <base-config cleartextTrafficPermitted="true" />
     <!-- 各平台 API 已全部 https；以下仅为播放流/封面 CDN 保留明文（代码内无其他 http:// 请求） -->
     <domain-config cleartextTrafficPermitted="true">
         <!-- 咪咕：播放/封面 CDN 可能返回 http（app.c.nf.migu.cn 等子域均已被本条覆盖，不再单列） -->

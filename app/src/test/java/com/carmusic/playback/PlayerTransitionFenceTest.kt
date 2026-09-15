@@ -57,7 +57,7 @@ class PlayerTransitionFenceTest {
             on { playMode }.doReturn(MutableStateFlow("REPEAT_ALL"))
             on { pendingDeadTracks }.doReturn(MutableStateFlow(emptySet()))
         }
-        pm = PlayerManager(context, mock(), db, settings)
+        pm = PlayerManager(context, mock(), db, settings, mock())
     }
 
     @After

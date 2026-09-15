@@ -131,5 +131,6 @@ fun CarMusicNavHost() {
         composable("history") { HistoryScreen(navController) }
         composable("drive") { DriveModeScreen(navController) }
         composable("settings") { SettingsScreen(navController) }
+        composable("radio") { com.carmusic.ui.radio.RadioScreen(navController) }
     }
 }

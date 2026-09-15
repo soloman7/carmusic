@@ -39,6 +39,16 @@ class SettingsRepository(private val context: Context) {
         private val KEY_LAST_CLEANUP_AT = longPreferencesKey("last_cleanup_at")
         private val KEY_INVALID_PLAYLISTS = stringSetPreferencesKey("invalid_playlists")
         private val KEY_PENDING_DEAD_TRACKS = stringSetPreferencesKey("pending_dead_tracks")
+
+        // ---- 电台(v5 M1b) ----
+        private val KEY_RADIO_PROVINCE = stringPreferencesKey("radio_province")
+        private val KEY_RADIO_BITRATE_LIMIT = intPreferencesKey("radio_bitrate_limit")
+        private val KEY_RADIO_LAST_UUID = stringPreferencesKey("radio_last_uuid")
+        private val KEY_RADIO_LAST_SYNC_AT = longPreferencesKey("radio_last_sync_at")
+        private val KEY_RADIO_LAST_SYNC_CN_ROWS = intPreferencesKey("radio_last_sync_cn_rows")
+        private val KEY_RADIO_LAST_SYNC_TOTAL_ROWS = intPreferencesKey("radio_last_sync_total_rows")
+        private val KEY_RADIO_SUSPECTS = stringSetPreferencesKey("radio_sync_suspects")
+        private val KEY_RADIO_MIRROR_LAST_GOOD = stringPreferencesKey("radio_mirror_last_good")
     }
 
     // 注：theme_mode（日间/自动主题）相关 key 与 ThemeMode 已整体移除——
@@ -171,4 +181,72 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setPendingDeadTracks(ids: Set<String>) =
         context.settingsDataStore.edit { it[KEY_PENDING_DEAD_TRACKS] = ids }
+
+    // ---- 电台(v5 M1b) ----
+
+    /** 本省浏览的省份;"" = 未设置(GPS 最近质心自动推荐后可手动改) */
+    val radioProvince: Flow<String> = context.settingsDataStore.data.map {
+        it[KEY_RADIO_PROVINCE] ?: ""
+    }
+
+    suspend fun setRadioProvince(p: String) =
+        context.settingsDataStore.edit { it[KEY_RADIO_PROVINCE] = p }
+
+    /** 码率过滤("只显示 ≤N kbps 的电台");0 = 不过滤。CN 语料 bitrate=0 占 89%,过滤对 CN 覆盖 ~11% */
+    val radioBitrateLimit: Flow<Int> = context.settingsDataStore.data.map {
+        it[KEY_RADIO_BITRATE_LIMIT] ?: 0
+    }
+
+    suspend fun setRadioBitrateLimit(n: Int) =
+        context.settingsDataStore.edit { it[KEY_RADIO_BITRATE_LIMIT] = n }
+
+    /** 最后收听的电台 uuid(电台会话持久化;显式动作才恢复,进程启动不出声) */
+    val lastRadioUuid: Flow<String> = context.settingsDataStore.data.map {
+        it[KEY_RADIO_LAST_UUID] ?: ""
+    }
+
+    suspend fun setLastRadioUuid(uuid: String) =
+        context.settingsDataStore.edit { it[KEY_RADIO_LAST_UUID] = uuid }
+
+    // ---- 电台同步元数据(行数断言分母/镜像 last-known-good/消失嫌疑队列) ----
+
+    val radioLastSyncAt: Flow<Long> = context.settingsDataStore.data.map {
+        it[KEY_RADIO_LAST_SYNC_AT] ?: 0L
+    }
+
+    suspend fun setRadioLastSyncAt(at: Long) =
+        context.settingsDataStore.edit { it[KEY_RADIO_LAST_SYNC_AT] = at }
+
+    val radioLastSyncCnRows: Flow<Int> = context.settingsDataStore.data.map {
+        it[KEY_RADIO_LAST_SYNC_CN_ROWS] ?: 0
+    }
+
+    suspend fun setRadioLastSyncCnRows(n: Int) =
+        context.settingsDataStore.edit { it[KEY_RADIO_LAST_SYNC_CN_ROWS] = n }
+
+    val radioLastSyncTotalRows: Flow<Int> = context.settingsDataStore.data.map {
+        it[KEY_RADIO_LAST_SYNC_TOTAL_ROWS] ?: 0
+    }
+
+    suspend fun setRadioLastSyncTotalRows(n: Int) =
+        context.settingsDataStore.edit { it[KEY_RADIO_LAST_SYNC_TOTAL_ROWS] = n }
+
+    /**
+     * 消失嫌疑队列(a∪b 中消失的 uuid,FIFO 上限 500):只怀疑不处决,
+     * M3 复验 worker 用 byuuid 批量裁决(缺失=数据库删除→墓碑;在册=嫌疑解除)。
+     */
+    val radioSyncSuspects: Flow<Set<String>> = context.settingsDataStore.data.map {
+        it[KEY_RADIO_SUSPECTS] ?: emptySet()
+    }
+
+    suspend fun setRadioSyncSuspects(ids: Set<String>) =
+        context.settingsDataStore.edit { it[KEY_RADIO_SUSPECTS] = ids }
+
+    /** 镜像 last-known-good(排到候选列表最前,减少每次轮转的探活成本) */
+    val radioMirrorLastGood: Flow<String> = context.settingsDataStore.data.map {
+        it[KEY_RADIO_MIRROR_LAST_GOOD] ?: ""
+    }
+
+    suspend fun setRadioMirrorLastGood(mirror: String) =
+        context.settingsDataStore.edit { it[KEY_RADIO_MIRROR_LAST_GOOD] = mirror }
 }

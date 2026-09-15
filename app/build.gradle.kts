@@ -22,8 +22,8 @@ android {
         applicationId = "com.carmusic"
         minSdk = 26
         targetSdk = 35
-        versionCode = 26
-        versionName = "3.4.5"
+        versionCode = 27
+        versionName = "3.5.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -78,6 +78,8 @@ android {
             // 被测代码路径里的 android.util.Log 调用在 JVM 单测中默认抛异常，
             // 改为静默返回默认值（与 mockito 相关配置解耦）
             isReturnDefaultValues = true
+            // Robolectric 读 app assets(电台 seed)必需
+            isIncludeAndroidResources = true
             all {
                 // 发版前真实网络门禁：gradlew testDebugUnitTest -PintegrationTests
                 it.systemProperty(

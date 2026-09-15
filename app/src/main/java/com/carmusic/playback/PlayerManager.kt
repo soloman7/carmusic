@@ -39,7 +39,8 @@ class PlayerManager(
     context: Context,
     private val sourceManager: com.carmusic.source.SourceManager,
     private val database: com.carmusic.data.AppDatabase,
-    private val settingsRepository: com.carmusic.data.SettingsRepository
+    private val settingsRepository: com.carmusic.data.SettingsRepository,
+    private val radioRepository: com.carmusic.data.radio.RadioRepository
 ) {
 
     private val appContext: Context = context.applicationContext
@@ -87,6 +88,13 @@ class PlayerManager(
 
     /** 音频会话 ID（EqManager attach audiofx 用；由 PlaybackService 推送到 AudioSessionHub，0 = 未分配） */
     val audioSessionId: StateFlow<Int> = AudioSessionHub.audioSessionId
+
+    /** 电台收听态(非 null = 正在收听电台;UI 收听条据此显示)。与 _currentTrack 互斥 */
+    private val _currentStation = MutableStateFlow<RadioNowPlaying?>(null)
+    val currentStation: StateFlow<RadioNowPlaying?> = _currentStation.asStateFlow()
+
+    /** 电台错误重起流:一次会话内只本地重试一次(D5 本地优先,API 不在恢复路径) */
+    private var radioRestartUsed = false
 
     // 自动跳歌保护：连续跳过整轮队列仍未成功 → 放弃，避免无限跳歌
     private var consecutiveSkips = 0
@@ -192,23 +200,135 @@ class PlayerManager(
 
     /** 播放目标分流入口(v5-D2):电台/音乐副作用在此分叉。internal 供测试与 M1b 驱动。 */
     internal fun handleTransition(mediaItem: MediaItem?, reason: Int) {
-        // 电台 fence:电台媒体项绝不进入音乐副作用(历史/预载/持久化/SHUFFLE 导航)。
-        // 电台会话语义(最后电台持久化/台名显示)在 M1b 实现。
-        if (PlaybackTarget.isRadioMediaId(mediaItem?.mediaId)) {
-            Log.d(TAG, "radio transition fenced: ${mediaItem?.mediaId}")
+        val mediaId = mediaItem?.mediaId
+        if (PlaybackTarget.isRadioMediaId(mediaId)) {
+            handleRadioTransition(mediaId!!.removePrefix(PlaybackTarget.RADIO_MEDIA_ID_PREFIX))
             return
         }
+        // 切回音乐:清除电台收听态(电台绝不写音乐历史/预载/持久化, fence 不变)
+        _currentStation.value = null
         playerListener.handleMusicTransition(mediaItem, reason)
     }
 
-    /** 播放错误分流入口(v5-D2)。电台 fence:不进音乐重签链(重起流语义 M1b 实现)。 */
+    /** 电台 transition:只更新收听态 + 持久化最后电台;绝不写音乐历史/预载/音乐持久化 */
+    private fun handleRadioTransition(uuid: String) {
+        scope.launch {
+            val station = runCatching { radioRepository.station(uuid) }.getOrNull()
+            _currentStation.value = RadioNowPlaying(
+                uuid = uuid,
+                name = station?.name?.takeIf { it.isNotBlank() } ?: "未命名电台",
+                codec = station?.codec ?: "",
+                bitrate = station?.bitrate ?: 0
+            )
+        }
+        scope.launch { runCatching { settingsRepository.setLastRadioUuid(uuid) } }
+    }
+
+    /** 收听电台(D5 直播流语义):直播流无队列/无 seek/无历史 */
+    fun playRadio(station: com.carmusic.data.radio.RadioStationEntity) {
+        startRadio(station.stationUuid, station.name, station.playUrl, station.favicon, station.codec, station.bitrate, station.isHls)
+    }
+
+    fun playRadio(favorite: com.carmusic.data.radio.RadioFavoriteEntity) {
+        startRadio(favorite.stationUuid, favorite.name, favorite.playUrl, favorite.favicon, favorite.codec, favorite.bitrate, favorite.isHls)
+    }
+
+    private fun startRadio(uuid: String, name: String, url: String, favicon: String, codec: String, bitrate: Int, isHls: Boolean) {
+        retryCount = 0
+        consecutiveFailTrack = null
+        retryJob?.cancel()
+        playAllJob?.cancel()
+        playAllJob = null
+        restoredSnapshot = null
+        radioRestartUsed = false
+        _currentTrack.value = null
+        scope.launch {
+            _error.value = null
+            val player = controller ?: return@launch
+            if (url.isBlank()) {
+                _error.value = "该电台没有可用播放地址"
+                return@launch
+            }
+            val builder = MediaItem.Builder()
+                .setUri(url)
+                .setMediaId(PlaybackTarget.RADIO_MEDIA_ID_PREFIX + uuid)
+            if (isHls) {
+                // LiveConfiguration 仅对 HLS/DASH 生效(v5-D5 限定);progressive 流靠缓冲+重连语义
+                builder.setLiveConfiguration(
+                    MediaItem.LiveConfiguration.Builder()
+                        .setTargetOffsetMs(10_000)
+                        .setMinPlaybackSpeed(0.95f)
+                        .setMaxPlaybackSpeed(1.02f)
+                        .build()
+                )
+            }
+            builder.setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(name.ifBlank { "未命名电台" })
+                    .setArtworkUri(favicon.takeIf { it.isNotBlank() }?.let { android.net.Uri.parse(it) })
+                    .build()
+            )
+            runCatching {
+                player.setMediaItem(builder.build())
+                player.prepare()
+                player.play()
+            }.onFailure { _error.value = "电台启动失败：${it.message}" }
+        }
+        scope.launch { runCatching { settingsRepository.setLastRadioUuid(uuid) } }
+    }
+
+    /** 停止收听(收听条按钮) */
+    fun stopRadio() {
+        runCatching { controller?.stop() }
+        _currentStation.value = null
+    }
+
+    /** 播放错误分流入口(v5-D2)。电台 = 本地优先恢复:重起流一次→挂账→驾驶态跳下一收藏台 */
     internal fun handlePlayerError(error: PlaybackException) {
         if (PlaybackTarget.isRadioMediaId(controller?.currentMediaItem?.mediaId)) {
-            Log.d(TAG, "radio stream error fenced from music retry chain")
-            _error.value = "电台播放中断"
+            handleRadioError()
             return
         }
         playerListener.handleMusicPlayerError(error)
+    }
+
+    /** 电台错误:重起流一次(1s 退避)→ 仍败 = localDeadUntil 挂账;API 不在恢复路径(v5-D5) */
+    private fun handleRadioError() {
+        val uuid = _currentStation.value?.uuid
+            ?: controller?.currentMediaItem?.mediaId?.removePrefix(PlaybackTarget.RADIO_MEDIA_ID_PREFIX)
+        if (uuid == null) {
+            _error.value = "电台播放中断"
+            return
+        }
+        val name = _currentStation.value?.name ?: "电台"
+        if (radioRestartUsed) {
+            radioRestartUsed = false
+            scope.launch {
+                runCatching { radioRepository.markLocalDead(uuid) }
+                if (radioRepository.isDrivingNow()) {
+                    val next = runCatching { radioRepository.nextVisibleFavoriteAfter(uuid) }.getOrNull()
+                    if (next != null) {
+                        _error.value = "「$name」中断，已切到下一收藏台"
+                        playRadio(next)
+                    } else {
+                        _error.value = "「$name」中断，且没有可用的收藏台"
+                    }
+                } else {
+                    _error.value = "「$name」播放中断，该台可能已下线"
+                }
+            }
+        } else {
+            radioRestartUsed = true
+            _error.value = "信号中断，重新连接…"
+            retryJob?.cancel()
+            retryJob = scope.launch {
+                delay(1000L)
+                runCatching {
+                    controller?.prepare()
+                    controller?.play()
+                }
+            }
+        }
     }
 
     private val playerListener = object : Player.Listener {
@@ -270,8 +390,14 @@ class PlayerManager(
         override fun onPlaybackStateChanged(playbackState: Int) {
             if (playbackState == Player.STATE_READY) {
                 _duration.value = controller?.duration ?: 0L
-                // 电台 fence(v5-D2):电台无恢复 seek、无 deadledger 出账(M1b 定义电台就绪语义)
-                if (PlaybackTarget.isRadioMediaId(controller?.currentMediaItem?.mediaId)) return
+                // 电台 fence:无恢复 seek、无 deadledger 出账;READY = 重起流成功 + click 上报
+                if (PlaybackTarget.isRadioMediaId(controller?.currentMediaItem?.mediaId)) {
+                    radioRestartUsed = false
+                    _currentStation.value?.uuid?.let { uuid ->
+                        scope.launch { runCatching { radioRepository.reportClick(uuid) } }
+                    }
+                    return
+                }
                 // 播放成功 = 该曲目绝不是死链：实时从清理挂账出账
                 // （把 DeadTrackLedger 注释宣称的"恢复播放自动出账"从宣称变成真实路径）
                 clearPendingDead(_currentTrack.value?.trackId)
@@ -340,6 +466,7 @@ class PlayerManager(
         consecutiveFailTrack = null
         retryJob?.cancel()
         restoredSnapshot = null
+        _currentStation.value = null   // 回到音乐会话语义
         if (!addToQueue) {
             // 单曲播放替换队列，必须先杀掉进行中的整单解析，否则旧 phase2 会越界插队
             playAllJob?.cancel()
@@ -403,6 +530,7 @@ class PlayerManager(
         consecutiveFailTrack = null
         retryJob?.cancel()
         restoredSnapshot = null
+        _currentStation.value = null   // 回到音乐会话语义
         preloadedSources.clear()
         // 关键：取消上一个还在跑的整单解析。旧 phase2 若继续往新队列插队，
         // pos 按旧队列算出、队列却已被 setMediaItems 重置 → addMediaItem 越界

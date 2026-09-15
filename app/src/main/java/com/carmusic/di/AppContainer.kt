@@ -48,9 +48,12 @@ class AppContainer(context: Context) {
     val cacheRepository: CacheRepository = CacheRepository(appContext)
     val sourceManager: SourceManager = SourceManager(okHttpClient, settingsRepository)
     val lyricRepository: LyricRepository = LyricRepository(database.lyricDao(), sourceManager)
-    val playerManager: PlayerManager = PlayerManager(appContext, sourceManager, database, settingsRepository)
-    val eqManager: com.carmusic.playback.EqManager = com.carmusic.playback.EqManager(settingsRepository, playerManager)
+    // 注意依赖顺序:RadioRepository 需要 drivingDetector,PlayerManager 需要 radioRepository
     val drivingDetector: DrivingDetector = DrivingDetector(appContext)
+    val radioRepository: com.carmusic.data.radio.RadioRepository =
+        com.carmusic.data.radio.RadioRepository(appContext, database, settingsRepository, drivingDetector, okHttpClient)
+    val playerManager: PlayerManager = PlayerManager(appContext, sourceManager, database, settingsRepository, radioRepository)
+    val eqManager: com.carmusic.playback.EqManager = com.carmusic.playback.EqManager(settingsRepository, playerManager)
     // v3.2 新增：自动更新 + 每周清理无效内容
     val updateManager: UpdateManager = UpdateManager(appContext, okHttpClient, settingsRepository)
     val contentCleaner: ContentCleaner = ContentCleaner(settingsRepository, sourceManager, database, playerManager)
@@ -73,6 +76,15 @@ class AppContainer(context: Context) {
             delay(10_000)
             runCatching { contentCleaner.runIfDue() }
         }
+        // 电台语料周期同步(v5-D1:本地库是唯一浏览来源,API 只是更新器;失败静默,下窗口重试)
+        containerScope.launch {
+            delay(30_000)
+            runCatching { radioRepository.syncIfDue() }
+        }
+    }
+
+    val radioVMFactory = viewModelFactory {
+        initializer { com.carmusic.ui.radio.RadioViewModel(radioRepository, settingsRepository, playerManager) }
     }
 
     val playerVMFactory = viewModelFactory {

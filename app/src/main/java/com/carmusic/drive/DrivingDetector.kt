@@ -46,6 +46,10 @@ class DrivingDetector(private val context: Context) {
     private val _isDriving = MutableStateFlow(false)
     val isDriving = _isDriving.asStateFlow()
 
+    /** 最近一次定位(含无速度字段的样本)——电台"本省"页 GPS 省份推荐用 */
+    private val _lastLocation = MutableStateFlow<Location?>(null)
+    val lastKnownLocation = _lastLocation.asStateFlow()
+
     /** 定位是否注册成功（false = 无权限或设备无可用 provider） */
     private val _active = MutableStateFlow(false)
     val active = _active.asStateFlow()
@@ -61,6 +65,7 @@ class DrivingDetector(private val context: Context) {
     private val listener = object : LocationListener {
         override fun onLocationChanged(loc: Location) {
             lastLocationAt = SystemClock.elapsedRealtime()
+            _lastLocation.value = loc
             val speed = effectiveSpeed(loc) ?: return   // 无速度字段：跳过，不向任何方向累计
             _isDriving.value = hysteresis.onSample(speed)
         }

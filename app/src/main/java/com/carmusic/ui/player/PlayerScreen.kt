@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.Equalizer
+import androidx.compose.material.icons.filled.Radio
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.History
@@ -369,6 +370,9 @@ private fun LeftPanel(
             Row {
                 PressableIconButton(onClick = { navController.navigate("search") }) {
                     Icon(Icons.Default.Search, "搜索", tint = CarTextSecondary, modifier = Modifier.size(24.dp))
+                }
+                PressableIconButton(onClick = { navController.navigate("radio") }) {
+                    Icon(Icons.Default.Radio, "电台", tint = CarTextSecondary, modifier = Modifier.size(26.dp))
                 }
                 PressableIconButton(onClick = { navController.navigate("favorite") }) {
                     Icon(Icons.Default.Favorite, "收藏", tint = CarTextSecondary, modifier = Modifier.size(24.dp))
