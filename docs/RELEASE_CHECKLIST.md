@@ -34,7 +34,8 @@
 
 > v3.4.4 起下载通道 = jsdelivr(testingcf)——**dl 分支 push 后必须先 GET 刷缓存再发版**：
 > `curl "https://purge.jsdelivr.net/gh/soloman7/carmusic@dl/carmusic-release.apk"`
-> （jsdelivr 分支内容缓存 12h,不刷会让车机拿到旧 APK 导致 SHA 校验失败）
+> `curl "https://purge.jsdelivr.net/gh/soloman7/carmusic@master/version.json"`
+> （jsdelivr 分支内容缓存 12h,不刷 APK 会导致 SHA 校验失败、version.json 会让车机 12h 内看不到新版本）
 
 - [ ] `versionCode` +1,`versionName` 更新(app/build.gradle.kts)
 - [ ] README 顶部版本号与特性段落更新
