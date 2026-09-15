@@ -55,4 +55,5 @@
 | 2026-09-13 | v3.4.3 (code 24) | 功能级审查整改:6 个 P1(驾驶检测hasSpeed误判/媒体键冷启动恢复/Auto点歌/流式搜索负缓存/清理链路不可达回归/广场切平台竞态)。门禁:单测 65/0 ✅ 回归脚本 exit 0(咪咕/QQ 搜索降 warn 待真机复核) ✅ APK SHA256 f117366d…da57d ✅。**本版是应用内更新闭环后的第一次真实交付:车机从 v3.4.2(23) 经检查更新→下载→安装到 24** | ZCode |
 | 2026-09-14 | v3.4.4 (code 25) | 车机用户反馈定位两处平台侧变化:QQ 匿名 vkey 收紧(vkey 四变体全空 purl,取流失效)→歌单预过滤改"整批保留",播放期跨平台 fallback 兜底;咪咕搜索端点反爬(HTML 挑战页)→MusicSource 新增 searchEnabled,咪咕退出聚合搜索(歌单广场实测 30/30 正常,保留)。门禁:单测 65/0 ✅ 回归 exit 0 ✅ SHA256 2a00aa26…5e555 ✅ | ZCode |
 | 2026-09-15 | v3.4.5 (code 26, M1a) | 电台功能 M1a:PlaybackTarget 显式类型(Music/Radio)+ PlayerManager 五处副作用 fence(历史/预载/重签链/persist/挂账出账,唯一判定点=PlaybackTarget.isRadioMediaId,无散落 startsWith)+ 差分单测(电台 transition 零副作用/歌曲行为不变)。附带生产加固:SessionToken 解析失败不再同步炸构造。门禁:单测 73/0(65 歌曲+8 新增) ✅ 回归脚本维持 ✅ SHA256 4efe6df2…02ea4 ✅。期间两个测试基建坑已修:runTest 撞无限 delay 循环(改 runBlocking)、Room close 与 init 异步读死锁(测试不 close 内存库) | ZCode |
+| 2026-09-15 | v3.4.5 交付 | 发现并修复交付缺陷:git push dl 失败时仅 API 提交了 master、漏了 dl 分支,jsdelivr 忠实吐 v3.4.4 旧包(MISMATCH);修复=url 钉住 dl commit SHA(不可变,无缓存竞态),实测 MATCH。车机端可正常收到 26/3.4.5 | ZCode |
 | | | | |
