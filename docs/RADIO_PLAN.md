@@ -1,67 +1,120 @@
-# "听电台"功能调研与方案(2026-09-15)
+# 听电台方案 v2(local-first 重构版,2026-09-15)
 
-## 一、调研结论
+> v1 被评"调研 A,产品 C+,架构 D"。本版按批判逐条重构:架构从 API-first 反转为 local-first,
+> PlaybackTarget 显式类型化,模式仲裁先写状态机再动手,NSC 决策摆账不喊口号,直播流补全技术规格,
+> 浏览结构砍到三屏,工作量按真实耦合重估。v1 数据结论保留,架构结论全部作废重写。
 
-目标项目确认为 **RadioBrowser(radio-browser.info)**——社区共建的全球网络电台数据库,服务端开源(GPL),数据 CC 授权,免费 API 无需 Key。GitHub: RadioBrowser/RadioBrowser(服务端),多语言官方客户端库(Java/Python/Rust/JS)。
+## 一、调研结论(实测数据,2026-09-15,中国 PC 网络)
 
-### 实测数据(2026-09-15,中国 PC 网络直连)
-
-| 探针 | 结果 |
+| 项 | 数值 |
 |---|---|
-| 数据规模 | 全库 58,576 台(6,389 台标记失效 → **~52,000 可用**),242 国,661 种语言 |
-| 中国电台 | **2,321 台**(hidebroken 后按 votes 拉取 1,500 条分析) |
-| API 可达性 | **de1(德国)✅ 通**,延迟 400~1400ms;nl1/at1/fi1/all ❌ 连接被重置 |
-| https 流占比(CN) | **60%**(907/1500);HLS(m3u8) 511 条;codec 以 MP3 为主(977),ExoPlayer 直接嗅探 |
-| 拉流实测 | CNR-1 中国之声(HLS)✅、怀集音乐之声(MP3)✅、CCTV-13(HLS)✅(脚本误报,播放列表正常取到) |
-| 头部台 | CCTV-13、CNR-1/2 中国之声/经济之声、凤凰卫视系列、各地市台,votes 最高 17k |
+| 项目 | RadioBrowser(radio-browser.info),服务端开源,免费 API 无 Key |
+| 全库 | 58,576 台,6,389 标记失效 → **~52,000 可用**;242 国 |
+| 中国 | stationcount 2,321;hidebroken 实拉 **2,073 台**,64%(1,326)为 https |
+| API 镜像 | **仅 de1(德国)可达**(400~1400ms);nl1/at1/fi1/all 连接被重置 |
+| seed 包实测 | CN 全量 + 全球 top1000 = **3,073 台,裁剪后 1,298KB JSON(gzip ~320KB)** |
+| 增量端点 | `/json/stations/changed?lastdays=N` 存在(200);实现时需确认返回含 url 字段,缺则回退全量分页 |
+| 拉流抽测 | CNR-1(HLS)✅、怀集音乐之声(MP3)✅、CCTV-13(HLS 播放列表正常)✅ |
+| 数据质量警示 | CN 的 `state`(省份)字段质量差:`/json/states` 过滤参数无效,社区填写稀疏混乱——**"本省"浏览必须客户端侧容错** |
+| HLS | media3-exoplayer-hls 已在依赖,511 个 CN HLS 台零新依赖可播 |
 
-### 可行性判定:**可行**,三个设计决策决定成败
+**未验证且 v2 不再掩盖**:de1 在车机蜂窝网络下的可达性(4G 路径与 PC 不同)。local-first 架构使它从"产品生死"降级为"数据新鲜度"——这正是重构的意义。
 
-1. **API 单点问题**:四个镜像只有 de1 从国内可达(其余被重置),`all.api` 轮询会撞死镜像。→ 运行时只打 de1 + **内置精选电台包兜底**(App 断网/接口被墙时热门台照听不误)。
-2. **明文流问题**:40% 中国台是 http-only,而 NSC 目前只对 4 个音乐 CDN 域名开明文。→ **默认只放 https 台**(CN 约 1,400 台,全球热门台绝大多数 https),不为电台全面放开明文;后续若确有需要,再加主流广播 CDN 的域名白名单。
-3. **HLS 已具备**:media3-exoplayer-hls 在依赖里,511 个 CN HLS 台 + 大量海外台直接可播,零新依赖。
+## 二、架构决策
 
-## 二、产品设计
+### D1 · local-first:数据搬回家,API 只是更新器
 
-- **入口**:主界面新增"电台"页(nav route `radio`),横屏双栏:左侧分类/列表,右侧"正在收听"卡片(复用播放控制)。
-- **浏览结构**(全部来自 API 现成字段):
-  - 热门台:`/stations/topvote` 与 `topclick`(全球 + 中国 tab)
-  - 分类:`/tags`(新闻/音乐/交通/相声/财经…中文 tag 直接可用)、`/countries`、CN 按省(`state` 字段)
-  - 搜索:台名关键字(电台搜索是浏览型,不像歌曲搜索怕打字,驾驶模式外开放)
-- **收藏**:Room 新表 `radio_favorites`(uuid 主键 + 冗余 name/url/logo),列表一键收藏;**方向盘上一首/下一首 = 收藏台间循环切换**(电台场景下比切歌更常用,且是纯盲操作)。
-- **驾驶模式**:DriveModeScreen 加"电台"大按钮;电台页在驾驶态下隐藏搜索框、保留收藏+热门两个大按钮列表。
-- **播放语义**(与歌曲的关键差异):直播流无时长/不可 seek → 进度条替换为"LIVE"徽标 + 播放时长累计;`onPlayerError` 不走歌曲的重签链,改为"同台 url ↔ url_resolved 互换重试一次 → 提示失败";EQ/音频焦点/becoming noisy 全部自动生效(同一 ExoPlayer)。
-- **会话恢复**:只持久化"最后收听的台 + 收藏列表",重启后一键回听(不存队列/进度)。
+- Room 新表 `radio_stations`:**CN 全量(2,073)+ 全球 top 1,000 ≈ 3,100 台**随 APK 内置(`assets/radio_seed.json`,gzip ~320KB),首启导入 Room。
+- 浏览/搜索/分类/收藏**全部查本地**,零网络依赖。等红灯点开电台页 = 一次本地查询,无转圈。
+- 同步:启动延迟任务,距上次同步 >7 天且 API 可达时,`/stations/changed?lastdays=14` 增量 upsert;`lastcheckok=0` → 本地 `hidden=1`(内置包与收藏台共用同一自愈管道,**消灭 v1"精选包静默腐烂"问题**)。API 不可达 → 静默跳过,下个窗口重试,用户无感。
+- 顺带修正 v1 的两个错误概念:①"精选 200 台"是 local-first 的缩水版,直接做全量;②电台点击上报 `/json/url/{uuid}` 采用 fire-and-forget(节流、仅播放时),不污染自己依赖的 topclick 排序。
 
-## 三、技术设计
+### D2 · PlaybackTarget 显式类型,五处副作用按类型分发
 
-- **数据层**:`RadioRepository`——API 客户端(de1,~1 req/s 节流,OkHttp 共享 client)+ Room `radio_favorites` + **精选包 `assets/radio_curated.json`**(首次内置 CN 头部 ~100 台 + 全球 ~100 台,字段与 API 对齐);浏览结果走 ApiCache(电台列表 TTL 30min,tag/国家列表 24h)。
-- **UI 层**:`RadioScreen` + `RadioViewModel`(列表/分类/收藏三态);平台色沿用主题;封面用 station favicon(Coil 现成)。
-- **播放层**:PlayerManager 增加 `playRadio(station)`——独立于歌曲队列:`_queue` 不动、`persistNow` 跳过、`currentTrack` 显示台名(/mediaId 用 `radio:<uuid>` 与歌曲 trackId 天然不冲突);返回歌曲页点歌自动回到歌曲会话语义。
-- **NSC**:维持 `cleartextTrafficPermitted=false` 基线,电台 https-only 过滤在 Repository 做;http-only 台在 UI 灰显不展示(数据里有 `url` 协议可判)。
+`sealed class PlaybackTarget { Music(track) | Radio(station) }`,PlayerManager 内的隐式假设收敛为显式分支,**禁止 `mediaId.startsWith("radio:")` 散落判断**:
 
-## 四、分期与工作量
+| 副作用点 | Music | Radio |
+|---|---|---|
+| `onMediaItemTransition` → history 写入 | ✅ | ❌ 跳过(电台不污染音乐历史) |
+| `schedulePreloadNext` | ✅ | ❌ 跳过(直播流无"下一首") |
+| `onPlayerError` → refreshAndRetry(音乐重签链) | ✅ | ❌ 走电台重起流语义(见 D5) |
+| `persistNow`(onIsPlayingChanged/transition 两入口) | 队列+进度 | 只写"最后电台"(单行,无进度) |
+| DeadTrackLedger 出账(STATE_READY 钩子) | ✅ | ❌ 跳过 |
+
+`restoredSnapshot` 恢复逻辑按 target 类型分流;电台不进 `trackRegistry` 的音乐语义区(登记表加类型字段或旁路表)。**工作量按此重估,不再是"一个 playRadio 函数"。**
+
+### D3 · 模式仲裁状态机(M2 动工前定死,不即兴)
+
+```
+mode ∈ {MUSIC, RADIO},持久化于 DataStore(lastPlaybackMode)
+切换:用户播歌 → MUSIC;用户选台 → RADIO;手动切换即时生效
+方向盘 NEXT/PREV:MUSIC → QueueNavigator;RADIO → 收藏台循环(按 sortOrder)
+方向盘 PLAY/PAUSE:当前 mode 内 toggle;冷启动(进程被杀):
+  mode=MUSIC → 现有快照恢复链;mode=RADIO → 自动起播最后收听的台
+点歌/选台的"自动回语义"不存在歧义:最后一次用户主动选择即当前 mode
+```
+
+- **收藏台排序**:显式 `sortOrder` 整数列 + 台目详情里"上移/下移"按钮(车机无拖拽)。新收藏追加末尾。
+- **收藏 1 台**:NEXT = 本台重新起流(等效"重连",直播流语义下合理)。
+- **收藏 0 台**:RADIO 循环 no-op;电台页默认落在"本省"页引导收藏。
+- **冷启动直接按方向盘键**:沿用 v3.4.3 的 playRestoredIfAny 链,RADIO mode 下起播最后电台。
+
+### D4 · NSC 决策:放开 base cleartext(B 方案),把账摆在明面
+
+v1"https-only + 灰显不展示"自相矛盾且教条。v2 算账:
+
+- **保护对象**:公共广播音频流。无凭据、无个人数据、内容本身免费公开——机密性/完整性价值 ≈ 0。
+- **代价**:https-only 砍掉 36% 中国台(2,073 → 1,326),砍掉的恰是地市交通台/本地新闻台——车载电台的核心价值。
+- **可维护性**:几千个电台随机域名,NSC domain-config 白名单路线不可维护(v1"后续按域加白"走不通,作废)。
+- **决策**:采用 B——`base-config cleartextTrafficPermitted="true"`,http 台正常展示(协议仅作徽标,不灰显不隐藏)。代码层纪律不变:所有 API 调用保持 https 字面量,UpdateManager 已强制更新链路 https。**残余风险如实登记**:车载蜂窝网络中间人可注入/篡改广播音频流——攻击价值趋近于零,私家自装 APK 威胁模型下可接受。音乐流 CDN 既有白名单保留(无害冗余)。
+
+### D5 · 直播流技术规格(v1 空白处补全)
+
+- **LiveConfiguration**:电台 MediaItem `setLiveConfiguration(targetOffsetMs=10_000, minPlaybackSpeed=0.95, maxPlaybackSpeed=1.02)`——追 live-edge 不漂移、不频繁 rebuffer;歌曲 MediaItem 不设置(点播语义)。
+- **缓冲**:ExoPlayer 全局 DefaultLoadControl 保持点播调优;直播起播延迟靠 LiveConfiguration + 连接态 UI 兜(车机 4G 冷启 2~10s,UI 明示"连接中"而非假进度)。
+- **错误语义 = 重新起流,不是同位置 retry**:失败 → 用本地 uuid 重查 API 刷新地址 → 更新 Room → 重试一次 → 仍失败则本地标记 `lastchecked=0` 入复验队列 → 驾驶态自动跳下一收藏台,非驾驶态提示"该台可能已下线"。v1 的"url↔url_resolved 互换"作废:url_resolved 是上次 check 的快照,而 ExoPlayer 本就自动跟 302,两者运行时等价。
+- **流量**:128kbps ≈ 56MB/h。设置页新增"电台码率上限"(不限/128/96/64kbps,过滤本地库);播放卡常显"≈NN MB/小时"。
+- **UA**:全局统一 `carmusic/<version>`(BuildConfig.UA,API 与 OkHttpDataSource 已统一),符合 RadioBrowser 可识别 UA 要求。
+- **click 上报**:起播成功后 GET `/json/url/{uuid}`,fire-and-forget、每台每小时最多一次。
+
+## 三、产品设计(M1 三屏封顶)
+
+1. **收藏(默认页)**:排序可调,空态引导。
+2. **本省**:省份选择器 = **GPS 最近质心自动推荐**(内置 34 省质心表,离线)+ 手动改;列表 = 本地库 `state` 字段过滤 ∪ 台名/tag 包含省名匹配(容忍脏数据,并集去重)。countries/全球分类整个砍掉,全球热门降级为搜索页一个入口。
+3. **搜索**:台名关键字,本地 LIKE。驾驶态(`isDriving=true`)下搜索框隐藏——等红灯时检测器仍判定驾驶,这是有意的保守(电台台名输入比歌曲搜索更依赖打字,盲操作不可行);语音整合依赖 DiLink 语音助手开放能力,M3 前不动,先如实标注 out-of-scope。
+
+**布局修正**:废除 v1"左侧列表+右侧常驻收听卡"的桌面双栏,改为全宽列表 + 底部 compact 收听条(LIVE 徽标 / 台名 / codec·码率 / ≈MB/h / 停止)。入口:PlayerScreen 控制排 + DriveModeScreen 大按钮(M2)。
+
+## 四、数据与同步规格
+
+- Room 4→5:`radio_stations`(uuid 主键,`hidden` 标记,索引:country/state/name;name 查询 3.1k 行 LIKE 无压力)+ `radio_favorites`(uuid 主键,`sortOrder`,`addedAt`)。schema JSON 照例入库。
+- seed 版本化:assets 内 `radio_seed.meta.json`(日期+台数),导入幂等(按 stationuuid upsert)。
+- 增量同步:`/stations/changed?lastdays=14` → upsert(url/name/lastcheckok 等);实现时若该端点响应缺 url 字段,回退为"全量分页重拉 CN+top"并写进注释。同步与收藏台复验共用同一延迟任务,全程避让播放(复用 awaitNotPlaying 带超时的既有模式)。
+
+## 五、分期与工作量(v2 重估)
 
 | 阶段 | 内容 | 规模 |
 |---|---|---|
-| M1 核心可用 | 电台页(热门/中国/分类/搜索)+ 播放/停止 + 收藏 Room + 精选包兜底 | ~800 行 + 1 张表 + 1 个 JSON 资产 |
-| M2 驾驶集成 | DriveMode 电台入口 + 方向盘收藏台切换 + 会话恢复 | ~150 行 |
-| M3 自愈 | 收藏台周期性 lastcheckok 复验(复用清理器骨架)+ Auto 浏览树电台节点 | ~200 行 |
+| M1 核心可用 | Room 迁移+seed 导入+同步器;PlaybackTarget 类型化改造(动 PlayerManager 五处);电台三屏 UI+收听条;播放/错误语义/流量显示;NSC B | **~1,200 行** + 2 表 + seed 资产 |
+| M2 驾驶与仲裁 | 模式仲裁状态机落地(冷启动/方向盘路由);DriveMode 电台大按钮;收藏排序上下移;会话恢复(最后电台) | **~350 行** |
+| M3 自愈与扩展 | 收藏台 lastcheckok 周期复验(挂账复用);Auto 浏览树电台节点;tag 分类页(按需) | ~250 行 |
 
-## 五、风险与对策
+## 六、验证计划
 
-| 风险 | 对策 |
-|---|---|
-| de1 镜像被墙(单点) | 精选包兜底;收藏台冗余完整播放信息,断网 API 也能播 |
-| 电台失效率高(全库 11% broken) | 只取 hidebroken=1;播放失败提示"该台可能已下线"并自动跳下一收藏台(电台场景合理默认) |
-| 明文台被 NSC 拦 | https-only 默认过滤;不降级全局明文安全策略 |
-| m3u8 播放列表里嵌 http 分片(CN 台可能) | 实测 China HLS 台分片普遍同源;若遇到,HLS 分片明文属 ExoPlayer 数据源层,如出现再按域加白(先验证再动 NSC) |
-| 台名/编码混乱(数据库社区维护) | 列表去重(名+url);展示 codec/bitrate 供用户判断 |
+- **PC 探针固化** `test_radio_api.py`:de1 健康、CN 台数、seed 一致性、抽 5 台拉流——定位是"数据生产侧"验证,**不宣称覆盖车机网络**(v1 的错)。
+- **车机实网 = M1 出口必要项**:de1 同步是否成功、本地浏览零网络可用性(飞行模式开电台页)、3 台实播(含 1 HLS)、断流恢复(开关飞行模式)、流量读数合理性。de1 车机不可达时功能仍须完整可用(这正是 local-first 的验收标准)。
+- **单测**:seed 导入幂等/字段容错;PlaybackTarget 五处分发(电台不写历史/不预载/不进 ledger);收藏循环边界(0/1/N 台);省份匹配并集去重;码率过滤。
+- **回归扩展**:收藏台全集跑 lastcheckok 复验(本地库驱动),替代 v1 的"固定 5 台"一次性快照。
 
-## 六、验证计划(M1 出口标准)
+## 七、风险登记
 
-- 回归脚本新增 `test_radio_api.py`:de1 可达、CN 台数、抽 5 台拉流(与本次调研同款探针固化)。
-- 单测:RadioRepository 解析/过滤(https-only、去重、精选包加载)。
-- 车机冒烟:热门中国台播放 5 个(含 1 个 HLS)、收藏 2 台重启仍在、驾驶模式大按钮进电台、方向盘切收藏台、播放中熄屏不断流、导航打断 ducking 生效。
+| 风险 | 等级 | 对策 |
+|---|---|---|
+| de1 车机不可达 | 中(已降级) | local-first:仅影响数据新鲜度,功能完整可用;seed 内置 |
+| CN state 字段脏 | 中 | 省份匹配 = state∪名称∪tag 并集;选择器可手动改;实测后必要时改为"城市 tag"方案 |
+| 电台普遍失效(全库 11%) | 中 | hidebroken 过滤 + 增量同步 hidden 标记 + 播放失败自动跳下一收藏台 |
+| PlayerManager 类型化改造引入歌曲回归 | 中 | 单测锁定五处副作用;车机冒烟歌曲链路全过 |
+| 明文流 NSC 放开 | 低(已算账) | D4 决策记录;API 层代码纪律不变 |
+| 语音搜台(驾驶态刚需) | 已知缺口 | 依赖 DiLink 语音能力,M3 前不动,如实标注 |
 
-—— 调研阶段完成,M1 待批准后动工。
+—— v2 完稿。M1 待批准动工,照旧:每步验证、门禁全绿、应用内更新交付。
