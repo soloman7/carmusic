@@ -93,6 +93,8 @@ class RadioViewModel(
     private val _hotLoaded = MutableStateFlow(false)
 
     init {
+        // 转圈根因修复:seed 导入必须在进入电台页时触发(v3.5.0 只挂在重试按钮上,永不执行)
+        viewModelScope.launch { radioRepository.ensureSeeded() }
         viewModelScope.launch {
             query.debounce(200).collect { kw ->
                 _searchResults.value = if (kw.isBlank()) emptyList()

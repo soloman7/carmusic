@@ -1,7 +1,7 @@
 {
-  "versionCode": 27,
-  "versionName": "3.5.0",
-  "url": "https://testingcf.jsdelivr.net/gh/soloman7/carmusic@4199f960d06d7bf9d3c5ac6324dee8ab436110c8/carmusic-release.apk",
-  "notes": "v3.5.0:新功能「听电台」——本地内置中国2300+台+全球热门1000台,收藏/本省(GPS推荐)/搜索三屏,LIVE收听条带流量估算",
-  "sha256": "727bf5ac8f951c72e53ba14ec0e951f35e40dbca682e725901d354fa9887d6b8"
+  "versionCode": 28,
+  "versionName": "3.5.1",
+  "url": "https://testingcf.jsdelivr.net/gh/soloman7/carmusic@41c980810ad6102f33dd1d4429a66184f367ca0a/carmusic-release.apk",
+  "notes": "v3.5.1:修复升级后播放歌单闪退(数据库迁移索引校验)与电台页持续转圈(种子导入未触发)",
+  "sha256": "bc3f4036ee0f4f18ee0549f3e4bcb9bef0d4321603da955e657850bcc711126e"
 }

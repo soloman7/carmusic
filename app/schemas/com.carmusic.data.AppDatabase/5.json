@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 5,
-    "identityHash": "a8bb93d1b0c06dc44b70b4f43fad842f",
+    "identityHash": "e770bf2489fa86b3c4c7800ec9dae55f",
     "entities": [
       {
         "tableName": "favorites",
@@ -363,7 +363,26 @@
             "stationUuid"
           ]
         },
-        "indices": [],
+        "indices": [
+          {
+            "name": "index_radio_stations_state",
+            "unique": false,
+            "columnNames": [
+              "state"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_radio_stations_state` ON `${TABLE_NAME}` (`state`)"
+          },
+          {
+            "name": "index_radio_stations_countryCode",
+            "unique": false,
+            "columnNames": [
+              "countryCode"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_radio_stations_countryCode` ON `${TABLE_NAME}` (`countryCode`)"
+          }
+        ],
         "foreignKeys": []
       },
       {
@@ -431,14 +450,24 @@
             "stationUuid"
           ]
         },
-        "indices": [],
+        "indices": [
+          {
+            "name": "index_radio_favorites_sortOrder",
+            "unique": false,
+            "columnNames": [
+              "sortOrder"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_radio_favorites_sortOrder` ON `${TABLE_NAME}` (`sortOrder`)"
+          }
+        ],
         "foreignKeys": []
       }
     ],
     "views": [],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'a8bb93d1b0c06dc44b70b4f43fad842f')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'e770bf2489fa86b3c4c7800ec9dae55f')"
     ]
   }
 }

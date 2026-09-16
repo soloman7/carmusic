@@ -79,6 +79,7 @@ class AppContainer(context: Context) {
         // 电台语料周期同步(v5-D1:本地库是唯一浏览来源,API 只是更新器;失败静默,下窗口重试)
         containerScope.launch {
             delay(30_000)
+            runCatching { radioRepository.ensureSeeded() }   // 未进过电台页的设备也能就绪
             runCatching { radioRepository.syncIfDue() }
         }
     }

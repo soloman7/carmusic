@@ -18,7 +18,10 @@ import kotlinx.coroutines.flow.Flow
  * - localDeadUntil:客户端播放失败挂账时间戳,同步禁触,随时间衰减,用户手点清零
  * 浏览可见性 = health==0 || deleted || now<localDeadUntil 任一命中;收藏页永远全量。
  */
-@Entity(tableName = "radio_stations")
+@Entity(
+    tableName = "radio_stations",
+    indices = [androidx.room.Index("state"), androidx.room.Index("countryCode")]
+)
 data class RadioStationEntity(
     @PrimaryKey @ColumnInfo(name = "stationUuid") val stationUuid: String,
     val name: String,
@@ -47,7 +50,7 @@ data class RadioStationEntity(
 }
 
 /** 收藏台:冗余播放字段,台站表删除后收藏仍可播 */
-@Entity(tableName = "radio_favorites")
+@Entity(tableName = "radio_favorites", indices = [androidx.room.Index("sortOrder")])
 data class RadioFavoriteEntity(
     @PrimaryKey @ColumnInfo(name = "stationUuid") val stationUuid: String,
     val sortOrder: Int,
