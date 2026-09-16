@@ -88,9 +88,14 @@ fun RadioScreen(
         when (seedState) {
             is RadioRepository.SeedState.Loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    val progress by vm.seedProgress.collectAsStateWithLifecycle()
                     CircularProgressIndicator(color = CarPrimary)
                     Spacer(Modifier.height(12.dp))
-                    Text("正在准备电台库…", color = CarTextSecondary)
+                    if (progress != null && progress!! > 0) {
+                        Text("正在导入电台库 $progress%", color = CarTextSecondary)
+                    } else {
+                        Text("正在准备电台库…", color = CarTextSecondary)
+                    }
                 }
             }
             is RadioRepository.SeedState.Error -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {

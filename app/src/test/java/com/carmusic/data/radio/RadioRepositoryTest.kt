@@ -66,32 +66,49 @@ class RadioRepositoryTest {
         localDeadUntil = localDeadUntil, localDeadCount = localDeadCount
     )
 
-    @Test
-    fun `seed imports full corpus once and is idempotent`() = runBlocking {
-        repo.ensureSeeded()
-        assertEquals(RadioRepository.SeedState.Ready, repo.seedState.value)
-        val first = db.radioStationDao().count()
-        assertTrue("seed 应导入全量语料(实测 ~3323)", first >= 3000)
-        val hot = db.radioStationDao().hotRankedAll()
-        assertEquals("top 段 1000 台应有 hotRank", 1000, hot.size)
-        assertEquals(1, hot.first().hotRank)
+    private fun seedJson(rows: List<String>): java.io.ByteArrayInputStream =
+        java.io.ByteArrayInputStream(
+            ("[" + rows.joinToString(",") {
+                """{"stationuuid":"$it","name":"台$it","url":"https://s/$it","url_resolved":"https://s/$it",""" +
+                    """"homepage":"","favicon":"","tags":"","country":"China","countrycode":"CN",""" +
+                    """"state":"","language":"chinese","codec":"MP3","bitrate":128,"hotRank":0,"lastcheckok":1}"""
+            } + "]").toByteArray()
+        )
 
-        repo.ensureSeeded()   // 第二次:幂等
-        assertEquals(first, db.radioStationDao().count())
+    @Test
+    fun `importSeed streams rows and assigns hot rank from seed`() = runBlocking {
+        val rows = (1..2500).map { "u$it" }.mapIndexed { idx, u -> if (idx == 0) "u1:hot" else u }
+        // 用带 hotRank 的合成语料
+        val json = ("[" + rows.mapIndexed { idx, u ->
+            """{"stationuuid":"$u","name":"台$u","url":"https://s/$u","url_resolved":"https://s/$u",""" +
+                """"homepage":"","favicon":"","tags":"","country":"CN","countrycode":"CN",""" +
+                """"state":"","language":"chinese","codec":"MP3","bitrate":128,"hotRank":${if (idx < 10) idx + 1 else 0},"lastcheckok":1}"""
+        }.joinToString(",") + "]").toByteArray()
+        repo.importSeed(java.io.ByteArrayInputStream(json), "v-test", 2500)
+
+        assertEquals(2500, db.radioStationDao().count())
+        assertEquals(10, db.radioStationDao().hotRankedAll().size)
+        assertEquals(1, db.radioStationDao().hotRankedAll().first().hotRank)
     }
 
     @Test
-    fun `seed is insert-if-absent and never touches pre-existing rows`() = runBlocking {
-        // 模拟同步过的本地状态:挂账中
+    fun `seed version gate skips reimport and row merge preserves local dead state`() = runBlocking {
+        // 本地已有:同一 uuid 挂账中 + 不同 uuid 已存在
         db.radioStationDao().upsertAll(
-            listOf(station("local-1", localDeadUntil = System.currentTimeMillis() + 3_600_000, localDeadCount = 1))
+            listOf(station("u1", localDeadUntil = System.currentTimeMillis() + 3_600_000, localDeadCount = 2))
         )
+        repo.importSeed(seedJson(listOf("u1", "u2")), "v1", 2)
+        // 行级合并:u1 的挂账保留(F2),u2 新增
+        val u1 = db.radioStationDao().getByUuid("u1")!!
+        assertTrue(u1.localDeadUntil > System.currentTimeMillis())
+        assertEquals(2, u1.localDeadCount)
+        assertEquals(2, db.radioStationDao().count())
+
+        // 版本门:settings 版本 == 真实 meta 版本 → ensureSeeded 命中跳过路径(Ready,不导入 58k)
+        settings.setRadioSeedVersion("2026-09-16")
         repo.ensureSeeded()
-        // count>0 → seed 整体跳过(新鲜度规则的结构化实现),本地挂账原样保留
-        val row = db.radioStationDao().getByUuid("local-1")
-        assertNotNull(row)
-        assertTrue(row!!.localDeadUntil > System.currentTimeMillis())
-        assertEquals(1, row.localDeadCount)
+        assertEquals(RadioRepository.SeedState.Ready, repo.seedState.value)
+        assertEquals("版本门命中 → 没有导入 58k 全量(仍是 importSeed 的 2 行)", 2, db.radioStationDao().count())
     }
 
     @Test

@@ -40,7 +40,6 @@ class RadioRepository(
 ) {
     companion object {
         private const val TAG = "RadioRepository"
-        private const val SEED_ASSET = "radio_seed.json"
         private const val SYNC_INTERVAL_MS = 7L * 24 * 3600 * 1000
         private const val PAGE_SIZE = 500
         private const val PAGE_BUDGET_MS = 150_000L      // v5-C3:p95 = 单点实测×3
@@ -50,7 +49,10 @@ class RadioRepository(
         private const val MAX_SUSPECTS = 500
         private const val COMPLETENESS_RATIO = 0.8       // v5-P1:行数下限防截断静默入库
         private const val CLICK_THROTTLE_MS = 3600_000L
-        private val UA = "carmusic/3.5.0 (github.com/soloman7/carmusic)"
+        private const val SEED_ASSET = "radio_seed_corpus.bin"   // .gz 扩展名会触发 AGP 资产特殊处理,用 .bin 存 gzip 字节
+        private const val SEED_META_ASSET = "radio_seed_meta.json"
+        private const val SEED_IMPORT_BATCH = 1000
+        private val UA = "carmusic/3.6.0 (github.com/soloman7/carmusic)"
 
         /** 镜像候选(v5:轮转,last-known-good 置前;"仅 de1"是带日期的观测,非常量) */
         private val MIRRORS = listOf(
@@ -102,7 +104,7 @@ class RadioRepository(
     private val stationDao get() = db.radioStationDao()
     private val favoriteDao get() = db.radioFavoriteDao()
 
-    // ---- seed 导入状态(UI 骨架态/错误态) ----
+    // ---- seed 导入状态(UI 骨架态/进度条/错误态) ----
     sealed class SeedState {
         data object Loading : SeedState()
         data object Ready : SeedState()
@@ -112,54 +114,130 @@ class RadioRepository(
     private val _seedState = MutableStateFlow<SeedState>(SeedState.Loading)
     val seedState: StateFlow<SeedState> = _seedState.asStateFlow()
 
+    /** 导入进度 0~100(null = 不在导入中);全量语料 ~5 万台,流式分批入库 */
+    private val _seedProgress = MutableStateFlow<Int?>(null)
+    val seedProgress: StateFlow<Int?> = _seedProgress.asStateFlow()
+
     private val seedMutex = Mutex()
 
-    /** 首启导入:insert-if-absent;health/deleted/localDeadUntil/localDeadCount 永不接受 seed 降级 */
+    /**
+     * seed 就绪:版本一致 → 直接 Ready;版本变化(新装/每次发版的全量语料刷新)→ 流式重导。
+     * 行级合并保留本地挂账/墓碑(F2);重导入的全量语料含失效标记(health 由 lastcheckok 驱动)。
+     */
     suspend fun ensureSeeded() = seedMutex.withLock {
         if (_seedState.value is SeedState.Ready) return@withLock
         try {
-            if (stationDao.count() == 0) {
-                withContext(Dispatchers.IO) {
-                    val json = context.assets.open(SEED_ASSET).bufferedReader().use { it.readText() }
-                    val type = object : TypeToken<List<Map<String, Any?>>>() {}.type
-                    val raw: List<Map<String, Any?>> = gson.fromJson(json, type)
-                    val entities = raw.map { row ->
-                        RadioStationEntity(
-                            stationUuid = row["stationuuid"]?.toString() ?: "",
-                            name = row["name"]?.toString() ?: "",
-                            url = row["url"]?.toString() ?: "",
-                            urlResolved = row["url_resolved"]?.toString() ?: "",
-                            homepage = row["homepage"]?.toString() ?: "",
-                            favicon = row["favicon"]?.toString() ?: "",
-                            tags = row["tags"]?.toString() ?: "",
-                            country = row["country"]?.toString() ?: "",
-                            countryCode = row["countrycode"]?.toString() ?: "",
-                            state = row["state"]?.toString() ?: "",
-                            language = row["language"]?.toString() ?: "",
-                            codec = row["codec"]?.toString() ?: "",
-                            bitrate = (row["bitrate"] as? Double)?.toInt() ?: 0,
-                            hotRank = (row["hotRank"] as? Double)?.toInt() ?: 0,
-                            health = 1, deleted = false, localDeadUntil = 0, localDeadCount = 0
-                        )
-                    }.filter { it.stationUuid.isNotBlank() }
-                    // seed 文件结构 = [CN 段(含 9 个高票 CN 台也出现在 top 段)] + [top 段]
-                    // top 段边界 = 第一个非 CN 行(9 个 CN∩top 台按票数排在 top 段头部)
-                    val boundary = entities.indexOfFirst { it.countryCode != "CN" }
-                    val cnCount = if (boundary == -1) entities.size else boundary
-                    val withRank = entities.mapIndexed { idx, e ->
-                        if (boundary != -1 && idx >= boundary) e.copy(hotRank = idx - boundary + 1) else e
+            val meta = withContext(Dispatchers.IO) {
+                gson.fromJson<Map<String, Any?>>(
+                    context.assets.open(SEED_META_ASSET).bufferedReader().use { it.readText() },
+                    object : TypeToken<Map<String, Any?>>() {}.type
+                )
+            } ?: emptyMap()
+            val version = meta["version"]?.toString().orEmpty()
+            val count = (meta["count"] as? Double)?.toInt() ?: 0
+            if (version.isNotBlank() && settings.radioSeedVersion.first() == version) {
+                _seedState.value = SeedState.Ready
+                return@withLock
+            }
+            withContext(Dispatchers.IO) {
+                context.assets.open(SEED_ASSET).use { raw ->
+                    java.util.zip.GZIPInputStream(raw).use { gz ->
+                        importSeed(gz, version, count)
                     }
-                    stationDao.upsertAll(withRank)
-                    // 行数断言分母的 seed 基准(分母本地可得,C7)
-                    settings.setRadioLastSyncCnRows(cnCount)
                 }
             }
+            settings.setRadioSeedVersion(version)
             _seedState.value = SeedState.Ready
         } catch (e: Exception) {
-            Log.w(TAG, "seed import failed: ${e.message}")
+            Log.w(TAG, "seed import failed: " + e.message)
             _seedState.value = SeedState.Error(e.message ?: "导入失败")
         }
     }
+
+    /**
+     * 流式导入(JsonReader 逐台解析,1000 台/批事务):全量语料 ~5 万台,
+     * 不整表驻留内存(车机防 OOM)。行级合并:existing 的 localDeadUntil/Count/deleted 保留。
+     * 进度按行数上报(totalHint 来自 meta)。
+     */
+    internal suspend fun importSeed(stream: java.io.InputStream, version: String, totalHint: Int) {
+        val preserved = stationDao.localStateSnapshot().associate { it.stationUuid to it }
+        val reader = com.google.gson.stream.JsonReader(
+            java.io.BufferedReader(java.io.InputStreamReader(stream, Charsets.UTF_8))
+        )
+        var cnRows = 0
+        var processed = 0
+        val batch = mutableListOf<RadioStationEntity>()
+        reader.beginArray()
+        while (reader.hasNext()) {
+            var uuid = ""; var name = ""; var url = ""; var urlResolved = ""; var homepage = ""
+            var favicon = ""; var tags = ""; var country = ""; var countryCode = ""
+            var state = ""; var language = ""; var codec = ""
+            var bitrate = 0; var hotRank = 0; var lastcheckok = 1
+            reader.beginObject()
+            while (reader.hasNext()) {
+                when (reader.nextName()) {
+                    "stationuuid" -> uuid = reader.nextStringSafe()
+                    "name" -> name = reader.nextStringSafe()
+                    "url" -> url = reader.nextStringSafe()
+                    "url_resolved" -> urlResolved = reader.nextStringSafe()
+                    "homepage" -> homepage = reader.nextStringSafe()
+                    "favicon" -> favicon = reader.nextStringSafe()
+                    "tags" -> tags = reader.nextStringSafe()
+                    "country" -> country = reader.nextStringSafe()
+                    "countrycode" -> countryCode = reader.nextStringSafe()
+                    "state" -> state = reader.nextStringSafe()
+                    "language" -> language = reader.nextStringSafe()
+                    "codec" -> codec = reader.nextStringSafe()
+                    "bitrate" -> bitrate = reader.nextIntSafe()
+                    "hotRank" -> hotRank = reader.nextIntSafe()
+                    "lastcheckok" -> lastcheckok = reader.nextIntSafe()
+                    else -> reader.skipValue()
+                }
+            }
+            reader.endObject()
+            if (uuid.isBlank()) continue
+            if (countryCode == "CN") cnRows++
+            processed++
+            val prev = preserved[uuid]
+            batch += RadioStationEntity(
+                stationUuid = uuid,
+                name = name,
+                url = url,
+                urlResolved = urlResolved,
+                homepage = homepage,
+                favicon = favicon,
+                tags = tags,
+                country = country,
+                countryCode = countryCode,
+                state = state,
+                language = language,
+                codec = codec,
+                bitrate = bitrate,
+                hotRank = hotRank,
+                health = lastcheckok,
+                deleted = prev?.deleted ?: false,
+                localDeadUntil = prev?.localDeadUntil ?: 0,
+                localDeadCount = prev?.localDeadCount ?: 0
+            )
+            if (batch.size >= SEED_IMPORT_BATCH) {
+                stationDao.upsertAll(batch.toList())
+                batch.clear()
+                if (totalHint > 0) _seedProgress.value = processed * 100 / totalHint
+            }
+        }
+        reader.endArray()
+        reader.close()
+        if (batch.isNotEmpty()) stationDao.upsertAll(batch.toList())
+        _seedProgress.value = 100
+        settings.setRadioLastSyncCnRows(cnRows)   // 行数断言分母的 seed 基准(C7)
+        Log.i(TAG, "seed imported: version=" + version + " rows=" + processed + " cn=" + cnRows)
+    }
+
+    private fun com.google.gson.stream.JsonReader.nextStringSafe(): String =
+        if (peek() == com.google.gson.stream.JsonToken.NULL) { nextNull(); "" } else nextString()
+
+    private fun com.google.gson.stream.JsonReader.nextIntSafe(): Int =
+        if (peek() == com.google.gson.stream.JsonToken.NULL) { nextNull(); 0 } else nextInt()
 
     // ---- 同步 ----
 

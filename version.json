@@ -1,7 +1,7 @@
 {
-  "versionCode": 28,
-  "versionName": "3.5.1",
-  "url": "https://testingcf.jsdelivr.net/gh/soloman7/carmusic@41c980810ad6102f33dd1d4429a66184f367ca0a/carmusic-release.apk",
-  "notes": "v3.5.1:修复升级后播放歌单闪退(数据库迁移索引校验)与电台页持续转圈(种子导入未触发)",
-  "sha256": "bc3f4036ee0f4f18ee0549f3e4bcb9bef0d4321603da955e657850bcc711126e"
+  "versionCode": 29,
+  "versionName": "3.6.0",
+  "url": "https://testingcf.jsdelivr.net/gh/soloman7/carmusic@6faa97ed180eec40d4c904b6978a17f15243e4fe/carmusic-release.apk",
+  "notes": "v3.6.0:电台全量语料——5.8 万有效台内置,搜索覆盖全球;导入带进度条",
+  "sha256": "2a5beb9b4f6abab1ed446d37f7df3731e1a271e0554d957090d5399e4fa9470c"
 }
