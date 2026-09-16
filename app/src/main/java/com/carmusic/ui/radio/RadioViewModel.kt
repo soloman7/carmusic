@@ -26,6 +26,7 @@ class RadioViewModel(
 ) : ViewModel() {
 
     val seedState = radioRepository.seedState
+    val seedProgress = radioRepository.seedProgress
     val currentStation = playerManager.currentStation
     val isDriving = radioRepository.isDriving
 

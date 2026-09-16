@@ -116,3 +116,117 @@
 | 其余(镜像漂移/state 脏/电台失效/M1a 回归/语音缺口) | 维持 v4 | 见 v4 对策 |
 
 —— v5 定稿:C1~C11 与 N3 全部落地,六项 M1b 前置全部满足,探针覆盖到实现形态本身。**M1a 可立即动工,M1b 随 M1a 发版后进场。**
+
+---
+
+# 电台分类浏览方案(v6 增补,2026-09-16;同日用户定稿)
+
+> 触发:车机实测反馈——①5.8 万台"除了搜索看不见";②推荐位(votes 排序)实测 **36/50 可播**,
+> 失败 12 台全为法国国际广播集团(geo-block/被墙),2 台 Opus 流过小待定。
+> 苏格拉底四问未获应答,按推荐项执行;**用户已定稿分类结构**(见 D-A 修订):
+> "第一大类按照国家,每个国家下面再分成静态分类(流行/摇滚/新闻/古典/爵士/老歌/舞曲/财经/谈话/文艺
+> + 交通等中国台名关键词类)。中国的电台按照省份划分。其他方案不变。"
+> 即:双轨匹配/clickcount 口序/每分类 top 100/分类卡替代 votes 推荐位四项全部采纳,
+> 维度由"平面 12 分类"改为**两级(国家 → 分类;中国 → 省份)**。
+
+## 一、第一性原理
+
+电台页的本质:**把"你现在能听、你想听的台"放到离手最近的地方**。
+- 行驶中:收藏 + 本省(已有,不动)。
+- 停车探索:分类 = 在不知道台名时按"想听什么类型"发现电台——这正是推荐歌单给歌曲提供的价值,迁移到电台。
+- "受欢迎程度"的真实含义不是历史投票(votes),而是**最近有人听**(clickcount)——它同时是"现在能用"的最强代理信号。votes 推荐位 28% 失效率就是反例。
+
+## 二、调研证据(2026-09-16 实测)
+
+| 项 | 数据 |
+|---|---|
+| 推荐位逐台实测 | hotRank 1..50:**36 可播 / 14 不可播**;失败 12 台全集中在法国国际广播集团(icecast.radiofrance.fr / radioja.fr 主机族),2 台 Opus 流过小待定 |
+| tag 现状 | 英文自由标签:pop 6213 / music 5257 / rock 3252 / news 3067 / jazz 1247 / oldies 1448 / 80s 1267…含垃圾 tag("moi merino" 1914);**中文 tag ≈ 0** |
+| CN 台 tag | 抽样 200 台,**82% 有 tags**,且为英文:music 56 / news 30 / entertainment 11 / classical 7 / economics 7… |
+| CN 台名 | 关键词富矿:含"音乐"50 台、"新闻"14、"交通"7、"经济"6 |
+| 排序口径 | clickcount(近期实际收听)vs votes(累计票);news tag 样本显示两者头部不同 |
+
+## 三、设计(四项假设可推翻)
+
+### D-A(修订,用户定稿)· 两级浏览 = 国家 → 静态分类;中国 → 省份
+
+**第一级 = 国家网格**(分类 tab 默认视图):
+- 中国固定首位,其余按 SUM(clickcount) 降序,top 30 张卡(长尾小国靠搜索,长尾不设 A-Z 索引——250 国网格在车机上不可扫视)。
+- 卡 = 国旗 emoji(ISO 码可计算,零资产)+ 中文名(硬编码 ~80 常用国映射,未映射回退 ISO 码)+ 可见台数。
+- **countryCode 为空的台(~1200 台)不进国家网格**,搜索仍可达。
+
+**第二级**:
+- 中国 → **省份网格**(34 省级行政区,按可见台数降序)。CN state 字段为邮政罗马音脏数据
+  (实测 64 个变体:Kiangsu/Chekiang/Shantung/Hopei/Honan/Kwangtung/Szechuan/Sinkiang/… +
+  大小写变体 jilin/Jilin + 个别中文)——建**省 → 别名清单**静态映射(覆盖全部 64 实测变体),
+  谓词 = state COLLATE NOCASE IN(别名) ∪ 台名 LIKE 省名 ∪ tag LIKE 省名(沿用三路并集)。
+- 其他国家 → **静态分类网格**(11 张卡,仅显示台数 > 0 的,固定枚举序):
+
+```kotlin
+data class RadioCategory(
+    val id: String, val displayName: String,
+    val matchTags: List<String>,        // tags 字段逗号分隔精确匹配(含中文显示名对应的英文 tag)
+    val nameKeywords: List<String> = emptyList()  // 台名关键词(覆盖海外中文台)
+)
+val CATEGORIES = listOf(   // 用户枚举的 10 类 + 交通;v6 初稿的"音乐"被用户清单移除
+    cat("pop",      "流行",   tags=["pop","top 40"]),
+    cat("rock",     "摇滚",   tags=["rock","pop rock"]),
+    cat("news",     "新闻",   tags=["news","information"], kw=["新闻"]),
+    cat("classical","古典",   tags=["classical"]),
+    cat("jazz",     "爵士",   tags=["jazz","smooth jazz"]),
+    cat("oldies",   "老歌",   tags=["oldies","70s","80s","90s"]),
+    cat("dance",    "舞曲",   tags=["dance","electronic","house"]),
+    cat("finance",  "财经",   tags=["business","economics","finance"], kw=["财经","经济"]),
+    cat("talk",     "谈话",   tags=["talk"]),
+    cat("culture",  "文艺",   tags=["culture"], kw=["文艺","戏曲","评书"]),
+    cat("traffic",  "交通",   tags=["traffic"], kw=["交通"])
+)
+```
+
+**第三级 = 台列表**:该国家×分类 / 中国×省份 的 top 100,ORDER BY clickcount DESC(平票 votes DESC)。
+分类 tab 内三层栈,BackHandler 逐层回退。
+
+- tag 匹配必须**分隔符精确**:(','||tags||',') LIKE '%,pop,%'——杜绝 "pop" 误命中 "synthpop"/"pop rock"(各自有独立分类);SQLite LIKE 对 ASCII 天然大小写不敏感。
+- 可见性过滤复用三态(health/deleted/localDeadUntil);码率过滤沿用。
+- 本省 tab 与「中国→省份」**共用同一套别名谓词**(同一省两边结果一致;本省命中面同时变宽)。
+
+### D-B · 排序 = clickcount(近期实际收听)
+
+- Schema v5→v6:`radio_stations` ADD `votes INTEGER NOT NULL DEFAULT 0`、`clickcount INTEGER NOT NULL DEFAULT 0`(实体 @ColumnInfo(defaultValue),**迁移测试先于实现**,MigrationTest 扩展 5→6)。
+- 同步 ApiStation 增映射 votes/clickcount;seed 生成脚本增两字段。
+- 分类列表:ORDER BY clickcount DESC LIMIT 100(v5-C 决策:分类=精选入口,长尾靠搜索)。
+- 失效台处置:反应式(播放失败→localDeadUntil→浏览列表自动隐藏),clickcount 排序天然把失效台沉底。
+
+### D-C · UI = 分类卡网格替代推荐位(PlaylistPanel 同款视觉)
+
+- 电台页 Tab 结构:**分类(默认)/ 收藏 / 本省 / 搜索**。
+- 分类页三层:国家网格(LazyVerticalGrid Adaptive 150dp,与推荐歌单同款;卡 = 国旗 emoji + 中文名 + 台数)
+  → 二级网格(中国=省份卡 / 他国=分类卡)→ 台列表 top 100(StationRow 沿用);BackHandler 逐层回退,VM 持栈切 tab 不丢。
+- 原"全球热门"推荐位退役(其 votes 口径 28% 失效);loadHot/hot 查询删除。
+- 卡片台数:国家分组 1 个 GROUP BY 扫描;省份/分类各为单国 COUNT(走 countryCode 索引),VM 缓存。
+
+### D-D · 数据新鲜度分层(如实的取舍)
+
+| 语料段 | 刷新通道 | 频率 |
+|---|---|---|
+| CN 全量 + top1000 | 运行时同步(既有管道) | 每 7 天 |
+| 全球长尾(~5.2 万台) | **随发版的 seed 重生成**(并行拉取 7.5 分钟) | 每周发版时 |
+| long-tail 的 health 新鲜度 | 随发版刷新;其间失效 = 播放失败挂账自动隐藏 | — |
+
+运行时拉全量 = 1 小时车机流量,不可接受;周更流程本来就要重新生成 seed,零增量成本。
+
+## 四、验证
+
+- 单测:分类匹配的**分隔符边界**("pop" 不命中 "synthpop"/"pop rock",各自独立分类)、台名关键词命中(海外中文台)、可见性三态过滤、clickcount 排序 + LIMIT 100、国家分组(中国钉首位 + clicks 降序)、**省别名谓词**(state='Kiangsu' 命中"江苏"、'jilin' 命中"吉林")、迁移 5→6(MigrationTest 扩展)。
+- 实测(发版红线):12 个分类各抽 top 5 台拉流,汇总可播率;目标 **≥ 85%**(对照 votes 推荐位的 72%)。
+- 车机冒烟:分类卡显示台数 → 进分类 → 播放 → 收藏 → 徽标重试。
+
+## 五、工作量
+
+| 项 | 规模 |
+|---|---|
+| 数据层(迁移 5→6 + 分类查询 + 同步字段) | ~250 行 |
+| UI(分类网格 + 二级列表页) | ~300 行 |
+| 单测 + 迁移测试扩展 | ~200 行 |
+| seed 重生成脚本(votes/clickcount) | ~40 行 |
+| 合计 | ~800 行 |

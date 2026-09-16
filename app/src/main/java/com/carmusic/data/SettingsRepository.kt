@@ -49,6 +49,7 @@ class SettingsRepository(private val context: Context) {
         private val KEY_RADIO_LAST_SYNC_TOTAL_ROWS = intPreferencesKey("radio_last_sync_total_rows")
         private val KEY_RADIO_SUSPECTS = stringSetPreferencesKey("radio_sync_suspects")
         private val KEY_RADIO_MIRROR_LAST_GOOD = stringPreferencesKey("radio_mirror_last_good")
+        private val KEY_RADIO_SEED_VERSION = stringPreferencesKey("radio_seed_version")
     }
 
     // 注：theme_mode（日间/自动主题）相关 key 与 ThemeMode 已整体移除——
@@ -249,4 +250,12 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setRadioMirrorLastGood(mirror: String) =
         context.settingsDataStore.edit { it[KEY_RADIO_MIRROR_LAST_GOOD] = mirror }
+
+    /** 已导入的 seed 版本(每次发版随全量语料刷新;版本一致则跳过导入) */
+    val radioSeedVersion: Flow<String> = context.settingsDataStore.data.map {
+        it[KEY_RADIO_SEED_VERSION] ?: ""
+    }
+
+    suspend fun setRadioSeedVersion(v: String) =
+        context.settingsDataStore.edit { it[KEY_RADIO_SEED_VERSION] = v }
 }
