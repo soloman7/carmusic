@@ -15,7 +15,7 @@ import com.carmusic.data.radio.RadioStationEntity
 @Database(
     entities = [FavoriteEntity::class, HistoryEntity::class, LyricEntity::class, PlaybackStateEntity::class,
         RadioStationEntity::class, RadioFavoriteEntity::class],
-    version = 5,
+    version = 6,
     exportSchema = true  // schema 输出到 app/schemas（构建侧 schemaLocation 已配置），供迁移比对
 )
 @TypeConverters(Converters::class)
@@ -59,7 +59,8 @@ abstract class AppDatabase : RoomDatabase() {
          * v4 -> v5：新增电台两表（local-first，seed 随 APK 内置后导入）。
          * health/deleted/localDeadUntil 三列语义互斥（可见性三态，同步对后两列只读）。
          */
-        private val MIGRATION_4_5 = object : Migration(4, 5) {
+        // internal:MigrationTest 直接引用(迁移缺陷钉死在发版前)
+        internal val MIGRATION_4_5 = object : Migration(4, 5) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
                     "CREATE TABLE IF NOT EXISTS `radio_stations` (" +
@@ -102,13 +103,26 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v5 -> v6：radio_stations 加 votes/clickcount 两列（v6-D-B 排序口径：
+         * clickcount=近期实际收听为主，votes=累计票为辅）。默认 0，旧行由 seed 版本门
+         * 触发的全量重导补齐（seed 与 doSync 均显式写这两列）。
+         */
+        // internal:MigrationTest 直接引用(迁移缺陷钉死在发版前)
+        internal val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE radio_stations ADD COLUMN votes INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE radio_stations ADD COLUMN clickcount INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun build(context: Context): AppDatabase {
             return Room.databaseBuilder(
                 context.applicationContext,
                 AppDatabase::class.java,
                 "carmusic.db"
             )
-                .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                 // v1 schema 无记录可查（exportSchema 此前为 false，未曾归档），
                 // 无法为它补写显式 migration，只允许 v1 破坏性升级；
                 // v2 起一律显式 migration，禁止全域 fallbackToDestructiveMigration。

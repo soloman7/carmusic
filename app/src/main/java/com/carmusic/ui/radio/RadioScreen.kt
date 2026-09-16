@@ -14,6 +14,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -44,6 +47,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
@@ -56,7 +60,7 @@ import com.carmusic.ui.theme.CarTextPrimary
 import com.carmusic.ui.theme.CarTextSecondary
 import com.carmusic.ui.theme.PressableIconButton
 
-/** 电台三屏(收藏/本省/搜索)。local-first:全部本地查询;底部常驻收听条。 */
+/** 电台四屏(分类/收藏/本省/搜索,v6-D-C)。local-first:全部本地查询;底部常驻收听条。 */
 @Composable
 fun RadioScreen(
     navController: NavController,
@@ -107,9 +111,10 @@ fun RadioScreen(
                 }
             }
             RadioRepository.SeedState.Ready -> {
-                // 三屏 Tab
+                // 四屏 Tab(分类默认首位:v6-D-C)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(
+                        RadioViewModel.Tab.CATEGORY to "分类",
                         RadioViewModel.Tab.FAVORITES to "收藏",
                         RadioViewModel.Tab.PROVINCE to "本省",
                         RadioViewModel.Tab.SEARCH to "搜索"
@@ -125,6 +130,7 @@ fun RadioScreen(
 
                 Box(Modifier.weight(1f)) {
                     when (tab) {
+                        RadioViewModel.Tab.CATEGORY -> CategoryTab(vm)
                         RadioViewModel.Tab.FAVORITES -> FavoritesTab(vm)
                         RadioViewModel.Tab.PROVINCE -> ProvinceTab(vm)
                         RadioViewModel.Tab.SEARCH -> SearchTab(vm)
@@ -145,11 +151,146 @@ fun RadioScreen(
     }
 }
 
+/**
+ * 分类页(v6-D-C 三层浏览栈):国家网格 → 二级网格(中国=省份 / 他国=分类)→ 台列表 top 100。
+ * 物理返回键逐层回退(VM.onCategoryBack),顶层交还系统。
+ */
+@Composable
+private fun CategoryTab(vm: RadioViewModel) {
+    val countries by vm.countries.collectAsStateWithLifecycle()
+    val selectedCountry by vm.selectedCountry.collectAsStateWithLifecycle()
+    val secondLevel by vm.secondLevel.collectAsStateWithLifecycle()
+    val secondLoading by vm.secondLoading.collectAsStateWithLifecycle()
+    val selectedLeaf by vm.selectedLeaf.collectAsStateWithLifecycle()
+    val leafList by vm.leafList.collectAsStateWithLifecycle()
+    val leafLoading by vm.leafLoading.collectAsStateWithLifecycle()
+    val favs by vm.favoritesWithStatus.collectAsStateWithLifecycle()
+
+    androidx.activity.compose.BackHandler(
+        enabled = selectedLeaf != null || selectedCountry != null
+    ) { vm.onCategoryBack() }
+
+    val country = selectedCountry
+    val leaf = selectedLeaf
+    when {
+        leaf != null && country != null -> {
+            Column {
+                BrowseHeader("${country.displayName} · ${leaf.label}") { vm.closeLeaf() }
+                when {
+                    leafLoading -> LoadingHint()
+                    leafList.isEmpty() -> EmptyHint("暂无可收听电台,试试其他分类。")
+                    else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(leafList, key = { it.stationUuid }) { station ->
+                            val isFav = favs.any { it.favorite.stationUuid == station.stationUuid }
+                            StationRow(
+                                name = station.name.ifBlank { "未命名电台" },
+                                subtitle = station.displayBitrate,
+                                favicon = station.favicon,
+                                isFavorite = isFav,
+                                badgeText = null,
+                                badgeColor = null,
+                                onPlay = { vm.play(station) },
+                                onToggleFavorite = { vm.toggleFavorite(station.stationUuid) }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        country != null -> {
+            Column {
+                BrowseHeader("${country.flag} ${country.displayName}".trim()) { vm.closeCountry() }
+                if (secondLoading) {
+                    LoadingHint()
+                } else {
+                    LazyVerticalGrid(
+                        columns = GridCells.Adaptive(150.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        gridItems(secondLevel) { g ->
+                            BrowseCard(title = g.label, flag = "", cnt = g.cnt) { vm.openLeaf(g) }
+                        }
+                    }
+                }
+            }
+        }
+        else -> {
+            if (countries.isEmpty()) {
+                LoadingHint()
+            } else {
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(150.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    gridItems(countries) { c ->
+                        BrowseCard(title = c.displayName, flag = c.flag, cnt = c.cnt) { vm.openCountry(c) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BrowseHeader(title: String, onBack: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        PressableIconButton(onClick = onBack) {
+            Icon(
+                Icons.AutoMirrored.Filled.ArrowBack, "返回",
+                tint = CarTextPrimary, modifier = Modifier.size(24.dp)
+            )
+        }
+        Spacer(Modifier.width(4.dp))
+        Text(
+            title, color = Color.White,
+            style = androidx.compose.material3.MaterialTheme.typography.titleMedium
+        )
+    }
+    Spacer(Modifier.height(6.dp))
+}
+
+/** PlaylistPanel 同款视觉(v6-D-C):国旗 emoji(可空)+ 名称 + 可见台数 */
+@Composable
+private fun BrowseCard(title: String, flag: String, cnt: Int, onClick: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0xFF121212))
+            .clickable(onClick = onClick)
+            .padding(vertical = 18.dp, horizontal = 8.dp)
+            .fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        if (flag.isNotBlank()) {
+            Text(flag, fontSize = 34.sp, color = Color.White)
+            Spacer(Modifier.height(6.dp))
+        }
+        Text(
+            title, color = CarTextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            style = androidx.compose.material3.MaterialTheme.typography.bodyLarge
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            "$cnt 台", color = CarTextSecondary,
+            style = androidx.compose.material3.MaterialTheme.typography.bodySmall
+        )
+    }
+}
+
+@Composable
+private fun LoadingHint() {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        CircularProgressIndicator(color = CarPrimary)
+    }
+}
+
 @Composable
 private fun FavoritesTab(vm: RadioViewModel) {
     val favorites by vm.favoritesWithStatus.collectAsStateWithLifecycle()
     if (favorites.isEmpty()) {
-        EmptyHint("还没有收藏电台。去「本省」或「搜索」找一个喜欢的台,点 ☆ 收藏。")
+        EmptyHint("还没有收藏电台。去「分类」「本省」或「搜索」找一个喜欢的台,点 ☆ 收藏。")
         return
     }
     LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -249,7 +390,6 @@ private fun SearchTab(vm: RadioViewModel) {
     val isDriving by vm.isDriving.collectAsStateWithLifecycle()
     val query by vm.query.collectAsState()
     val results by vm.searchResults.collectAsStateWithLifecycle()
-    val hot by vm.hotList.collectAsStateWithLifecycle()
     val favs by vm.favoritesWithStatus.collectAsStateWithLifecycle()
 
     Column {
@@ -269,17 +409,11 @@ private fun SearchTab(vm: RadioViewModel) {
             }
         }
         Spacer(Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("全球热门:", color = CarTextSecondary)
-            TextButton(onClick = { vm.loadHot() }) { Text("看看热门台", color = CarPrimary) }
-        }
-        Spacer(Modifier.height(4.dp))
-        val display = if (query.isNotBlank()) results else hot
-        if (display.isEmpty()) {
-            EmptyHint(if (query.isNotBlank()) "没有匹配「${query.trim()}」的电台" else "输入台名搜索,或点「看看热门台」")
+        if (results.isEmpty()) {
+            EmptyHint(if (query.isNotBlank()) "没有匹配「${query.trim()}」的电台" else "输入台名搜索;按类型找台请去「分类」")
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                items(display, key = { it.stationUuid }) { station ->
+                items(results, key = { it.stationUuid }) { station ->
                     val isFav = favs.any { it.favorite.stationUuid == station.stationUuid }
                     StationRow(
                         name = station.name.ifBlank { "未命名电台" },

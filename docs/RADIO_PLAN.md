@@ -196,6 +196,7 @@ val CATEGORIES = listOf(   // 用户枚举的 10 类 + 交通;v6 初稿的"音�
 - 同步 ApiStation 增映射 votes/clickcount;seed 生成脚本增两字段。
 - 分类列表:ORDER BY clickcount DESC LIMIT 100(v5-C 决策:分类=精选入口,长尾靠搜索)。
 - 失效台处置:反应式(播放失败→localDeadUntil→浏览列表自动隐藏),clickcount 排序天然把失效台沉底。
+- **D-B2(实施期增补)发版侧 CN 可达性探测**:clickcount 统计的是点进尝试,失效台(点进率反而高)不会自动沉底——实测红线首跑 11 分类×top5 仅 83%(死台按播出方集群集中在 top:SWR3 一台占 3 分类、France Médias 死簇)。增补:seed 构建时对 11 分类×clickcount top15 做连接级拉流探测(10s×2 次失败记死;SSL 链问题视为活——服务器应答,判定归播放期),死台在 seed 内标记 health=0,浏览列表即刻隐藏。复活周期=运行时 doSync(仅 CN+topvote1000,7 天)或下周 seed 重探;已挂账设备的 localDeadUntil 同步禁触,始终兜底。探测结果存 .corpus-raw/probe_results.json 供审计。
 
 ### D-C · UI = 分类卡网格替代推荐位(PlaylistPanel 同款视觉)
 

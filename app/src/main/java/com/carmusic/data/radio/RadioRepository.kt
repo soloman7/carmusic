@@ -2,6 +2,7 @@ package com.carmusic.data.radio
 
 import android.content.Context
 import android.util.Log
+import androidx.sqlite.db.SimpleSQLiteQuery
 import com.carmusic.data.AppDatabase
 import com.carmusic.data.SettingsRepository
 import com.carmusic.drive.DrivingDetector
@@ -52,7 +53,13 @@ class RadioRepository(
         private const val SEED_ASSET = "radio_seed_corpus.bin"   // .gz 扩展名会触发 AGP 资产特殊处理,用 .bin 存 gzip 字节
         private const val SEED_META_ASSET = "radio_seed_meta.json"
         private const val SEED_IMPORT_BATCH = 1000
-        private val UA = "carmusic/3.6.0 (github.com/soloman7/carmusic)"
+        private val UA = "carmusic/3.7.0 (github.com/soloman7/carmusic)"
+
+        /** v6-D-A 浏览上限:分类/省份列表 = 精选入口(v5-C),长尾靠搜索 */
+        private const val BROWSE_LIMIT = 100
+
+        /** 国家网格规模(v6-D-A:中国钉首位 + clickcount 前 29;长尾小国靠搜索) */
+        private const val COUNTRY_GRID_LIMIT = 30
 
         /** 镜像候选(v5:轮转,last-known-good 置前;"仅 de1"是带日期的观测,非常量) */
         private val MIRRORS = listOf(
@@ -173,6 +180,7 @@ class RadioRepository(
             var favicon = ""; var tags = ""; var country = ""; var countryCode = ""
             var state = ""; var language = ""; var codec = ""
             var bitrate = 0; var hotRank = 0; var lastcheckok = 1
+            var votes = 0; var clickcount = 0
             reader.beginObject()
             while (reader.hasNext()) {
                 when (reader.nextName()) {
@@ -190,6 +198,8 @@ class RadioRepository(
                     "codec" -> codec = reader.nextStringSafe()
                     "bitrate" -> bitrate = reader.nextIntSafe()
                     "hotRank" -> hotRank = reader.nextIntSafe()
+                    "votes" -> votes = reader.nextIntSafe()
+                    "clickcount" -> clickcount = reader.nextIntSafe()
                     "lastcheckok" -> lastcheckok = reader.nextIntSafe()
                     else -> reader.skipValue()
                 }
@@ -214,6 +224,8 @@ class RadioRepository(
                 codec = codec,
                 bitrate = bitrate,
                 hotRank = hotRank,
+                votes = votes,
+                clickcount = clickcount,
                 health = lastcheckok,
                 deleted = prev?.deleted ?: false,
                 localDeadUntil = prev?.localDeadUntil ?: 0,
@@ -274,7 +286,9 @@ class RadioRepository(
         val language: String? = null,
         val codec: String? = null,
         val bitrate: Int? = null,
-        val lastcheckok: Int? = null
+        val lastcheckok: Int? = null,
+        val votes: Int? = null,
+        val clickcount: Int? = null
     )
 
     private suspend fun doSync(): SyncResult {
@@ -332,6 +346,8 @@ class RadioRepository(
                 codec = s.codec ?: "",
                 bitrate = s.bitrate ?: 0,
                 hotRank = 0,
+                votes = s.votes ?: 0,
+                clickcount = s.clickcount ?: 0,
                 health = s.lastcheckok ?: 1,
                 deleted = prev?.deleted ?: false,
                 localDeadUntil = prev?.localDeadUntil ?: 0,
@@ -414,9 +430,118 @@ class RadioRepository(
 
     // ---- 浏览查询(全部本地;码率过滤;收藏页不过滤) ----
 
+    /**
+     * 动态谓词构建器:SQL 片段与占位参数严格同序追加,杜绝错位。
+     * 可见性三态(deleted/health/localDeadUntil)与码率过滤是所有浏览查询的公共段。
+     */
+    private inner class BrowseSql {
+        val args = mutableListOf<Any?>()
+
+        fun visibility(): String {
+            args += System.currentTimeMillis()
+            return "deleted = 0 AND health = 1 AND localDeadUntil <= ?"
+        }
+
+        fun country(code: String): String {
+            args += code
+            return "countryCode = ?"
+        }
+
+        /** 三路并集(v5 本省语义,别名扩展):state 别名 COLLATE NOCASE IN ∪ 台名 LIKE 省名 ∪ tag LIKE 省名 */
+        fun province(province: String): String {
+            val aliases = RadioCatalog.PROVINCE_ALIASES[province] ?: listOf(province)
+            val esc = RadioCatalog.likeEscape(province)
+            aliases.forEach { args += it }
+            args += "%$esc%"
+            args += "%$esc%"
+            val stateIn = aliases.joinToString(",") { "?" }
+            return "(state COLLATE NOCASE IN ($stateIn) OR TRIM(name) LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')"
+        }
+
+        /** 双轨匹配:tag 分隔符精确(%,pop,% 防 synthpop)∪ 台名关键词(海外中文台) */
+        fun category(cat: RadioCatalog.RadioCategory): String {
+            val parts = mutableListOf<String>()
+            if (cat.matchTags.isNotEmpty()) {
+                cat.matchTags.forEach { args += "%,${RadioCatalog.likeEscape(it)},%" }
+                parts += cat.matchTags.joinToString(" OR ") { "(',' || tags || ',') LIKE ? ESCAPE '\\'" }
+            }
+            if (cat.nameKeywords.isNotEmpty()) {
+                cat.nameKeywords.forEach { args += "%${RadioCatalog.likeEscape(it)}%" }
+                parts += cat.nameKeywords.joinToString(" OR ") { "TRIM(name) LIKE ? ESCAPE '\\'" }
+            }
+            return "(" + parts.joinToString(" OR ") + ")"
+        }
+
+        fun bitrate(limit: Int): String {
+            args += limit
+            args += limit
+            return "(? = 0 OR bitrate = 0 OR bitrate <= ?)"
+        }
+    }
+
+    private suspend fun browseCount(sql: String, args: List<Any?>): Int =
+        stationDao.rawCount(SimpleSQLiteQuery(sql, args.toTypedArray()))
+
+    /** 浏览排序口径(v6-D-B):近期收听为主,累计票平票,码率兜底 */
+    private val BROWSE_ORDER = "ORDER BY clickcount DESC, votes DESC, bitrate DESC"
+
+    /** 国家网格(分类 tab 第一级):中国钉首位 + SUM(clickcount) 降序 top 30 */
+    data class CountryGroup(val code: String, val displayName: String, val flag: String, val cnt: Int)
+
+    /** 二级网格卡(省份/分类通用):key=省名或分类 id */
+    data class BrowseGroup(val key: String, val label: String, val cnt: Int)
+
+    suspend fun countryGroups(): List<CountryGroup> {
+        val bl = settings.radioBitrateLimit.first()
+        return stationDao.countryGroups(System.currentTimeMillis(), bl, COUNTRY_GRID_LIMIT)
+            .map {
+                CountryGroup(
+                    it.code, RadioCatalog.countryName(it.code), RadioCatalog.flagEmoji(it.code), it.cnt
+                )
+            }
+    }
+
+    /** 中国省份卡(34 省,台数 > 0,按可见台数降序;与列表同谓词,卡数=列表规模上限口径) */
+    suspend fun provinceGroups(): List<BrowseGroup> {
+        val bl = settings.radioBitrateLimit.first()
+        return RadioCatalog.PROVINCE_ALIASES.keys.mapNotNull { p ->
+            val b = BrowseSql()
+            val sql = "SELECT COUNT(*) FROM radio_stations WHERE ${b.visibility()} AND ${b.country("CN")} " +
+                "AND ${b.province(p)} AND ${b.bitrate(bl)}"
+            val cnt = browseCount(sql, b.args)
+            if (cnt > 0) BrowseGroup(p, p, cnt) else null
+        }.sortedByDescending { it.cnt }
+    }
+
+    /** 某国家各分类卡(固定枚举序,台数 > 0) */
+    suspend fun categoryGroups(countryCode: String): List<BrowseGroup> {
+        val bl = settings.radioBitrateLimit.first()
+        return RadioCatalog.CATEGORIES.mapNotNull { cat ->
+            val b = BrowseSql()
+            val sql = "SELECT COUNT(*) FROM radio_stations WHERE ${b.visibility()} AND ${b.country(countryCode)} " +
+                "AND ${b.category(cat)} AND ${b.bitrate(bl)}"
+            val cnt = browseCount(sql, b.args)
+            if (cnt > 0) BrowseGroup(cat.id, cat.displayName, cnt) else null
+        }
+    }
+
+    /** 省/直辖市/自治区 台列表 top 100(本省 tab 与「中国→省份」共用同一谓词) */
     suspend fun provinceStations(province: String): List<RadioStationEntity> {
-        val limit = settings.radioBitrateLimit.first()
-        return stationDao.byProvince(province, System.currentTimeMillis(), limit)
+        val bl = settings.radioBitrateLimit.first()
+        val b = BrowseSql()
+        val sql = "SELECT * FROM radio_stations WHERE ${b.visibility()} AND ${b.country("CN")} " +
+            "AND ${b.province(province)} AND ${b.bitrate(bl)} $BROWSE_ORDER LIMIT $BROWSE_LIMIT"
+        return stationDao.rawStations(SimpleSQLiteQuery(sql, b.args.toTypedArray()))
+    }
+
+    /** 国家×分类 台列表 top 100 */
+    suspend fun categoryStations(countryCode: String, categoryId: String): List<RadioStationEntity> {
+        val cat = RadioCatalog.category(categoryId) ?: return emptyList()
+        val bl = settings.radioBitrateLimit.first()
+        val b = BrowseSql()
+        val sql = "SELECT * FROM radio_stations WHERE ${b.visibility()} AND ${b.country(countryCode)} " +
+            "AND ${b.category(cat)} AND ${b.bitrate(bl)} $BROWSE_ORDER LIMIT $BROWSE_LIMIT"
+        return stationDao.rawStations(SimpleSQLiteQuery(sql, b.args.toTypedArray()))
     }
 
     suspend fun searchStations(kw: String): List<RadioStationEntity> {
@@ -424,11 +549,6 @@ class RadioRepository(
         if (trimmed.isEmpty()) return emptyList()
         val limit = settings.radioBitrateLimit.first()
         return stationDao.search(trimmed, System.currentTimeMillis(), limit)
-    }
-
-    suspend fun hotStations(limit: Int = 50): List<RadioStationEntity> {
-        val bl = settings.radioBitrateLimit.first()
-        return stationDao.hot(limit, System.currentTimeMillis(), bl)
     }
 
     suspend fun station(uuid: String): RadioStationEntity? = stationDao.getByUuid(uuid)

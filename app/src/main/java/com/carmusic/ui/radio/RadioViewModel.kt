@@ -16,8 +16,9 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /**
- * 电台三屏(收藏/本省/搜索)。全部数据来自本地 Room(local-first),唯一网络是后台同步。
- * 收藏页永远全量显示(异常台徽标态,C4);可见性过滤只作用于本省/搜索/热门。
+ * 电台四屏(分类/收藏/本省/搜索)。全部数据来自本地 Room(local-first),唯一网络是后台同步。
+ * 收藏页永远全量显示(异常台徽标态,C4);可见性过滤只作用于分类/本省/搜索。
+ * 分类页三层浏览栈(v6-D-C:国家 → 省份/分类 → 台列表)由 VM 持有,切 tab 不丢,物理返回逐层回退。
  */
 class RadioViewModel(
     private val radioRepository: RadioRepository,
@@ -30,14 +31,102 @@ class RadioViewModel(
     val currentStation = playerManager.currentStation
     val isDriving = radioRepository.isDriving
 
-    enum class Tab { FAVORITES, PROVINCE, SEARCH }
+    enum class Tab { CATEGORY, FAVORITES, PROVINCE, SEARCH }
 
-    private val _tab = MutableStateFlow(Tab.FAVORITES)
+    private val _tab = MutableStateFlow(Tab.CATEGORY)
     val tab: StateFlow<Tab> = _tab.asStateFlow()
 
     fun selectTab(t: Tab) {
         _tab.value = t
         if (t == Tab.PROVINCE) refreshProvince()
+        if (t == Tab.CATEGORY && !countriesLoaded) loadCountries()
+    }
+
+    // ---- 分类页(v6-D-A 用户定稿:国家 → 省份/分类;中国 → 省份) ----
+
+    data class CountryCard(val code: String, val displayName: String, val flag: String, val cnt: Int)
+
+    /** 二级网格卡:key = 省名(中国)或分类 id(他国) */
+    data class GroupCard(val key: String, val label: String, val cnt: Int)
+
+    private var countriesLoaded = false
+
+    private val _countries = MutableStateFlow<List<CountryCard>>(emptyList())
+    val countries: StateFlow<List<CountryCard>> = _countries.asStateFlow()
+
+    private val _selectedCountry = MutableStateFlow<CountryCard?>(null)
+    val selectedCountry: StateFlow<CountryCard?> = _selectedCountry.asStateFlow()
+
+    private val _secondLevel = MutableStateFlow<List<GroupCard>>(emptyList())
+    val secondLevel: StateFlow<List<GroupCard>> = _secondLevel.asStateFlow()
+
+    private val _secondLoading = MutableStateFlow(false)
+    val secondLoading: StateFlow<Boolean> = _secondLoading.asStateFlow()
+
+    private val _selectedLeaf = MutableStateFlow<GroupCard?>(null)
+    val selectedLeaf: StateFlow<GroupCard?> = _selectedLeaf.asStateFlow()
+
+    private val _leafList = MutableStateFlow<List<RadioStationEntity>>(emptyList())
+    val leafList: StateFlow<List<RadioStationEntity>> = _leafList.asStateFlow()
+
+    private val _leafLoading = MutableStateFlow(false)
+    val leafLoading: StateFlow<Boolean> = _leafLoading.asStateFlow()
+
+    private fun loadCountries() {
+        viewModelScope.launch {
+            _countries.value = runCatching { radioRepository.countryGroups() }
+                .getOrDefault(emptyList())
+                .map { CountryCard(it.code, it.displayName, it.flag, it.cnt) }
+            countriesLoaded = true
+        }
+    }
+
+    fun openCountry(c: CountryCard) {
+        _selectedCountry.value = c
+        _selectedLeaf.value = null
+        _leafList.value = emptyList()
+        _secondLevel.value = emptyList()
+        _secondLoading.value = true
+        viewModelScope.launch {
+            _secondLevel.value = if (c.code == "CN")
+                runCatching { radioRepository.provinceGroups() }.getOrDefault(emptyList())
+                    .map { GroupCard(it.key, it.label, it.cnt) }
+            else
+                runCatching { radioRepository.categoryGroups(c.code) }.getOrDefault(emptyList())
+                    .map { GroupCard(it.key, it.label, it.cnt) }
+            _secondLoading.value = false
+        }
+    }
+
+    fun closeCountry() {
+        _selectedCountry.value = null
+        _secondLevel.value = emptyList()
+        closeLeaf()
+    }
+
+    fun openLeaf(g: GroupCard) {
+        val country = _selectedCountry.value ?: return
+        _selectedLeaf.value = g
+        _leafLoading.value = true
+        viewModelScope.launch {
+            _leafList.value = if (country.code == "CN")
+                runCatching { radioRepository.provinceStations(g.key) }.getOrDefault(emptyList())
+            else
+                runCatching { radioRepository.categoryStations(country.code, g.key) }.getOrDefault(emptyList())
+            _leafLoading.value = false
+        }
+    }
+
+    fun closeLeaf() {
+        _selectedLeaf.value = null
+        _leafList.value = emptyList()
+    }
+
+    /** 分类页物理返回:逐层回退;顶层返回 false 交还系统(退电台页) */
+    fun onCategoryBack(): Boolean = when {
+        _selectedLeaf.value != null -> { closeLeaf(); true }
+        _selectedCountry.value != null -> { closeCountry(); true }
+        else -> false
     }
 
     // ---- 收藏页(全量 + 徽标态,C4) ----
@@ -88,11 +177,6 @@ class RadioViewModel(
     private val _searchResults = MutableStateFlow<List<RadioStationEntity>>(emptyList())
     val searchResults: StateFlow<List<RadioStationEntity>> = _searchResults.asStateFlow()
 
-    private val _hotList = MutableStateFlow<List<RadioStationEntity>>(emptyList())
-    val hotList: StateFlow<List<RadioStationEntity>> = _hotList.asStateFlow()
-
-    private val _hotLoaded = MutableStateFlow(false)
-
     init {
         // 转圈根因修复:seed 导入必须在进入电台页时触发(v3.5.0 只挂在重试按钮上,永不执行)
         viewModelScope.launch { radioRepository.ensureSeeded() }
@@ -101,14 +185,6 @@ class RadioViewModel(
                 _searchResults.value = if (kw.isBlank()) emptyList()
                 else runCatching { radioRepository.searchStations(kw) }.getOrDefault(emptyList())
             }
-        }
-    }
-
-    fun loadHot() {
-        if (_hotLoaded.value) return
-        viewModelScope.launch {
-            _hotList.value = runCatching { radioRepository.hotStations(50) }.getOrDefault(emptyList())
-            _hotLoaded.value = true
         }
     }
 

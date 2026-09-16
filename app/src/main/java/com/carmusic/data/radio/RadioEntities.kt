@@ -7,8 +7,10 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
+import androidx.room.RawQuery
 import androidx.room.Transaction
 import androidx.room.Upsert
+import androidx.sqlite.db.SupportSQLiteQuery
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -38,6 +40,10 @@ data class RadioStationEntity(
     val bitrate: Int,
     /** 全球热门排名(1..1000,0=非热门);同步写 */
     val hotRank: Int,
+    /** 累计投票数(v6-D-B:排序辅助口径);seed/同步写 */
+    @ColumnInfo(defaultValue = "0") val votes: Int = 0,
+    /** 近期实际收听次数(v6-D-B:分类/国家排序主口径,"现在能用"的代理信号);seed/同步写 */
+    @ColumnInfo(defaultValue = "0") val clickcount: Int = 0,
     val health: Int,
     val deleted: Boolean,
     val localDeadUntil: Long,
@@ -82,15 +88,7 @@ interface RadioStationDao {
     @Query("SELECT * FROM radio_stations WHERE stationUuid = :uuid")
     suspend fun getByUuid(uuid: String): RadioStationEntity?
 
-    /** 本省:state 精确 ∪ 台名含省名 ∪ tag 含省名(数据脏,三路并集),不含墓碑/下线/本地挂账 */
-    @Query(
-        """SELECT * FROM radio_stations
-           WHERE deleted = 0 AND health = 1 AND localDeadUntil <= :now AND countryCode = 'CN'
-             AND (state = :province OR name LIKE '%' || :province || '%' OR tags LIKE '%' || :province || '%')
-             AND (:bitrateLimit = 0 OR bitrate = 0 OR bitrate <= :bitrateLimit)
-           ORDER BY CASE WHEN state = :province THEN 0 ELSE 1 END, bitrate DESC"""
-    )
-    suspend fun byProvince(province: String, now: Long, bitrateLimit: Int): List<RadioStationEntity>
+    /** 本省/省份浏览由 Repository 的别名谓词 @RawQuery 承接(v6-D-A:state 邮政罗马音脏数据,64 变体别名表) */
 
     /** 台名搜索(可见台) */
     @Query(
@@ -102,17 +100,28 @@ interface RadioStationDao {
     )
     suspend fun search(kw: String, now: Long, bitrateLimit: Int): List<RadioStationEntity>
 
-    /** 全球热门(搜索页入口) */
-    @Query(
-        """SELECT * FROM radio_stations
-           WHERE deleted = 0 AND health = 1 AND localDeadUntil <= :now AND hotRank > 0
-             AND (:bitrateLimit = 0 OR bitrate = 0 OR bitrate <= :bitrateLimit)
-           ORDER BY hotRank LIMIT :limit"""
-    )
-    suspend fun hot(limit: Int, now: Long, bitrateLimit: Int): List<RadioStationEntity>
+    /** v6-D-A:动态谓词查询(分类/省份的 tag 与台名匹配串由 Repository 按 RadioCatalog 构建) */
+    @RawQuery(observedEntities = [RadioStationEntity::class])
+    suspend fun rawStations(query: SupportSQLiteQuery): List<RadioStationEntity>
+
+    /** v6-D-A:动态谓词计数(分类卡/省份卡台数) */
+    @RawQuery(observedEntities = [RadioStationEntity::class])
+    suspend fun rawCount(query: SupportSQLiteQuery): Int
 
     @Query("SELECT * FROM radio_stations WHERE hotRank > 0 ORDER BY hotRank")
     suspend fun hotRankedAll(): List<RadioStationEntity>
+
+    /** 国家分组(v6-D-A 第一级):可见台按国家聚合,中国钉首位,其余按总收听量降序 */
+    @Query(
+        """SELECT countryCode AS code, COUNT(*) AS cnt, SUM(clickcount) AS clicks
+           FROM radio_stations
+           WHERE deleted = 0 AND health = 1 AND localDeadUntil <= :now AND countryCode != ''
+             AND (:bitrateLimit = 0 OR bitrate = 0 OR bitrate <= :bitrateLimit)
+           GROUP BY countryCode
+           ORDER BY (countryCode = 'CN') DESC, clicks DESC
+           LIMIT :limit"""
+    )
+    suspend fun countryGroups(now: Long, bitrateLimit: Int, limit: Int): List<RadioCountryGroup>
 
     @Query("UPDATE radio_stations SET hotRank = 0 WHERE hotRank > 0")
     suspend fun resetHotRanks()
@@ -159,4 +168,11 @@ data class RadioLocalState(
     val localDeadUntil: Long,
     val localDeadCount: Int,
     val deleted: Boolean
+)
+
+/** 国家分组卡(v6-D-A 第一级):code=ISO 码,clicks=可见台总收听量 */
+data class RadioCountryGroup(
+    val code: String,
+    val cnt: Int,
+    val clicks: Long
 )
