@@ -69,10 +69,10 @@ class MigrationTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         buildDatabaseFromSchema(context, "migration-test-4-5", 4)
 
-        // Room 以 user_version=4 打开 → 执行 MIGRATION_4_5(+5→6 链)→ 按实体 schema 校验
+        // Room 以 user_version=4 打开 → 执行 MIGRATION_4_5(+5→6→7 链)→ 按实体 schema 校验
         // (索引与实体 @Index 不一致会在此抛 "Migration didn't properly handle")
         val room = Room.databaseBuilder(context, AppDatabase::class.java, "migration-test-4-5")
-            .addMigrations(AppDatabase.MIGRATION_4_5, AppDatabase.MIGRATION_5_6)
+            .addMigrations(AppDatabase.MIGRATION_4_5, AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7)
             .allowMainThreadQueries()
             .build()
 
@@ -130,7 +130,7 @@ class MigrationTest {
         pre.close()
 
         val room = Room.databaseBuilder(context, AppDatabase::class.java, "migration-test-5-6")
-            .addMigrations(AppDatabase.MIGRATION_5_6)
+            .addMigrations(AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7)
             .allowMainThreadQueries()
             .build()
 
@@ -157,6 +157,78 @@ class MigrationTest {
                 val fresh = room.radioStationDao().getByUuid("new1")!!
                 assertEquals(42, fresh.votes)
                 assertEquals(7, fresh.clickcount)
+            }
+        } finally {
+            room.close()
+        }
+    }
+
+    /**
+     * 6→7(v3.7.1 hotfix):浏览覆盖索引 index_radio_stations_browse 迁入。
+     * v3.5.1 教训锁:迁移建的索引必须与实体 @Index 同名同列序,Room 校验不过 = 一切 DB 访问炸。
+     * 同时验证迁移后国家分组查询真实可用(索引就是为它建的)。
+     */
+    @Test
+    fun `migrate 6 to 7 adds covering browse index and country groups work`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        buildDatabaseFromSchema(context, "migration-test-6-7", 6)
+
+        // v6 库预置数据:3 台 CN + 1 台 US(clickcount 有值,health=1 可见)
+        val pre = SQLiteDatabase.openOrCreateDatabase(context.getDatabasePath("migration-test-6-7"), null)
+        repeat(3) { i ->
+            pre.execSQL(
+                "INSERT INTO radio_stations (stationUuid, name, url, urlResolved, homepage, favicon, tags, " +
+                    "country, countryCode, state, language, codec, bitrate, hotRank, votes, clickcount, " +
+                    "health, deleted, localDeadUntil, localDeadCount) VALUES " +
+                    "('m$i','台$i','https://s/$i','https://s/$i','','','pop','China','CN','','chinese','MP3'," +
+                    "128,0,1,${i * 10},1,0,0,0)"
+            )
+        }
+        pre.execSQL(
+            "INSERT INTO radio_stations (stationUuid, name, url, urlResolved, homepage, favicon, tags, " +
+                "country, countryCode, state, language, codec, bitrate, hotRank, votes, clickcount, " +
+                "health, deleted, localDeadUntil, localDeadCount) VALUES " +
+                "('us1','US台','https://s/us','https://s/us','','','rock','USA','US','','english','MP3'," +
+                "128,0,5,99,1,0,0,0)"
+        )
+        pre.close()
+
+        val room = Room.databaseBuilder(context, AppDatabase::class.java, "migration-test-6-7")
+            .addMigrations(AppDatabase.MIGRATION_6_7)
+            .allowMainThreadQueries()
+            .build()
+
+        try {
+            runBlocking {
+                // 覆盖索引真实存在
+                room.openHelper.readableDatabase.query(
+                    "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='radio_stations'"
+                ).use { c ->
+                    val names = mutableListOf<String>()
+                    while (c.moveToNext()) names.add(c.getString(0))
+                    assertTrue(
+                        "浏览覆盖索引必须存在:" + names,
+                        names.contains("index_radio_stations_browse")
+                    )
+                }
+                // 索引为之而建的查询真实可用:中国钉首位,计数正确
+                val groups = room.radioStationDao().countryGroups(0, 0, 30)
+                assertEquals("CN", groups.first().code)
+                assertEquals(3, groups.first().cnt)
+                assertEquals("US", groups[1].code)
+                // 迁移后新行仍可写(votes/clickcount 显式值)
+                room.radioStationDao().upsertAll(
+                    listOf(
+                        RadioStationEntity(
+                            stationUuid = "post7", name = "新台", url = "https://s/7",
+                            urlResolved = "https://s/7", homepage = "", favicon = "", tags = "jazz",
+                            country = "Germany", countryCode = "DE", state = "", language = "de",
+                            codec = "MP3", bitrate = 128, hotRank = 0, votes = 3, clickcount = 9, health = 1,
+                            deleted = false, localDeadUntil = 0, localDeadCount = 0
+                        )
+                    )
+                )
+                assertEquals(9, room.radioStationDao().getByUuid("post7")!!.clickcount)
             }
         } finally {
             room.close()

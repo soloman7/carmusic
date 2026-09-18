@@ -15,7 +15,7 @@ import com.carmusic.data.radio.RadioStationEntity
 @Database(
     entities = [FavoriteEntity::class, HistoryEntity::class, LyricEntity::class, PlaybackStateEntity::class,
         RadioStationEntity::class, RadioFavoriteEntity::class],
-    version = 6,
+    version = 7,
     exportSchema = true  // schema 输出到 app/schemas（构建侧 schemaLocation 已配置），供迁移比对
 )
 @TypeConverters(Converters::class)
@@ -116,13 +116,28 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v6 -> v7：radio_stations 加浏览覆盖索引（v3.7.1 hotfix：国家/分类/省份浏览
+         * 的过滤列与排序口径全部入索引，消除 58k 行逐行回表——车机上分类页转圈秒级的根因）。
+         * 索引名与列序必须与实体 @Index(name = "index_radio_stations_browse") 完全一致。
+         */
+        // internal:MigrationTest 直接引用(迁移缺陷钉死在发版前)
+        internal val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_radio_stations_browse " +
+                        "ON radio_stations(countryCode, health, deleted, localDeadUntil, clickcount, bitrate)"
+                )
+            }
+        }
+
         fun build(context: Context): AppDatabase {
             return Room.databaseBuilder(
                 context.applicationContext,
                 AppDatabase::class.java,
                 "carmusic.db"
             )
-                .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                 // v1 schema 无记录可查（exportSchema 此前为 false，未曾归档），
                 // 无法为它补写显式 migration，只允许 v1 破坏性升级；
                 // v2 起一律显式 migration，禁止全域 fallbackToDestructiveMigration。

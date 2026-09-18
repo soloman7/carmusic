@@ -22,7 +22,17 @@ import kotlinx.coroutines.flow.Flow
  */
 @Entity(
     tableName = "radio_stations",
-    indices = [androidx.room.Index("state"), androidx.room.Index("countryCode")]
+    indices = [
+        androidx.room.Index("state"),
+        androidx.room.Index("countryCode"),
+        // v3.7.1:浏览覆盖索引——国家/分类/省份的计数与列表谓词(deleted/health/localDeadUntil/
+        // bitrate)+排序口径(clickcount)全部在索引内,免 58k 胖行回表(车机上秒级→毫秒级)。
+        // 与 MIGRATION_6_7 的 CREATE INDEX 同名同列序,错位 = Room 校验失败(v3.5.1 教训)。
+        androidx.room.Index(
+            value = ["countryCode", "health", "deleted", "localDeadUntil", "clickcount", "bitrate"],
+            name = "index_radio_stations_browse"
+        )
+    ]
 )
 data class RadioStationEntity(
     @PrimaryKey @ColumnInfo(name = "stationUuid") val stationUuid: String,

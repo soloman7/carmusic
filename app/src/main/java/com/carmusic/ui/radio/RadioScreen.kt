@@ -158,6 +158,8 @@ fun RadioScreen(
 @Composable
 private fun CategoryTab(vm: RadioViewModel) {
     val countries by vm.countries.collectAsStateWithLifecycle()
+    val countriesLoading by vm.countriesLoading.collectAsStateWithLifecycle()
+    val countriesError by vm.countriesError.collectAsStateWithLifecycle()
     val selectedCountry by vm.selectedCountry.collectAsStateWithLifecycle()
     val secondLevel by vm.secondLevel.collectAsStateWithLifecycle()
     val secondLoading by vm.secondLoading.collectAsStateWithLifecycle()
@@ -202,6 +204,8 @@ private fun CategoryTab(vm: RadioViewModel) {
                 BrowseHeader("${country.flag} ${country.displayName}".trim()) { vm.closeCountry() }
                 if (secondLoading) {
                     LoadingHint()
+                } else if (secondLevel.isEmpty()) {
+                    EmptyHint("「${country.displayName}」暂无可收听电台,试试其他国家。")
                 } else {
                     LazyVerticalGrid(
                         columns = GridCells.Adaptive(150.dp),
@@ -215,18 +219,23 @@ private fun CategoryTab(vm: RadioViewModel) {
                 }
             }
         }
-        else -> {
-            if (countries.isEmpty()) {
-                LoadingHint()
-            } else {
-                LazyVerticalGrid(
-                    columns = GridCells.Adaptive(150.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    gridItems(countries) { c ->
-                        BrowseCard(title = c.displayName, flag = c.flag, cnt = c.cnt) { vm.openCountry(c) }
-                    }
+        else -> when {
+            countriesLoading -> LoadingHint()
+            countriesError != null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("分类加载失败:${countriesError}", color = CarTextSecondary)
+                    Spacer(Modifier.height(12.dp))
+                    TextButton(onClick = { vm.retryCountries() }) { Text("重试", color = CarPrimary) }
+                }
+            }
+            countries.isEmpty() -> EmptyHint("暂无可按国家浏览的电台")
+            else -> LazyVerticalGrid(
+                columns = GridCells.Adaptive(150.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                gridItems(countries) { c ->
+                    BrowseCard(title = c.displayName, flag = c.flag, cnt = c.cnt) { vm.openCountry(c) }
                 }
             }
         }

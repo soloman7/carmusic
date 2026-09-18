@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -39,7 +40,7 @@ class RadioViewModel(
     fun selectTab(t: Tab) {
         _tab.value = t
         if (t == Tab.PROVINCE) refreshProvince()
-        if (t == Tab.CATEGORY && !countriesLoaded) loadCountries()
+        if (t == Tab.CATEGORY) loadCountries()   // loadCountries 自带去重,重复点击无副作用
     }
 
     // ---- 分类页(v6-D-A 用户定稿:国家 → 省份/分类;中国 → 省份) ----
@@ -53,6 +54,14 @@ class RadioViewModel(
 
     private val _countries = MutableStateFlow<List<CountryCard>>(emptyList())
     val countries: StateFlow<List<CountryCard>> = _countries.asStateFlow()
+
+    /** 进入分类页即加载(v3.7.1:此前只挂 selectTab,默认 tab 进入时无人触发=永久转圈) */
+    private val _countriesLoading = MutableStateFlow(false)
+    val countriesLoading: StateFlow<Boolean> = _countriesLoading.asStateFlow()
+
+    /** 加载失败态(空列表≠加载中:失败不得伪装成转圈,给重试入口) */
+    private val _countriesError = MutableStateFlow<String?>(null)
+    val countriesError: StateFlow<String?> = _countriesError.asStateFlow()
 
     private val _selectedCountry = MutableStateFlow<CountryCard?>(null)
     val selectedCountry: StateFlow<CountryCard?> = _selectedCountry.asStateFlow()
@@ -72,14 +81,27 @@ class RadioViewModel(
     private val _leafLoading = MutableStateFlow(false)
     val leafLoading: StateFlow<Boolean> = _leafLoading.asStateFlow()
 
-    private fun loadCountries() {
+    private fun loadCountries(force: Boolean = false) {
+        if (_countriesLoading.value) return
+        if (countriesLoaded && !force) return
+        _countriesLoading.value = true
+        _countriesError.value = null
         viewModelScope.launch {
-            _countries.value = runCatching { radioRepository.countryGroups() }
-                .getOrDefault(emptyList())
-                .map { CountryCard(it.code, it.displayName, it.flag, it.cnt) }
-            countriesLoaded = true
+            try {
+                _countries.value = radioRepository.countryGroups()
+                    .map { CountryCard(it.code, it.displayName, it.flag, it.cnt) }
+                countriesLoaded = true
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _countriesError.value = e.message ?: "加载失败"
+            } finally {
+                _countriesLoading.value = false
+            }
         }
     }
+
+    fun retryCountries() = loadCountries(force = true)
 
     fun openCountry(c: CountryCard) {
         _selectedCountry.value = c
@@ -180,6 +202,11 @@ class RadioViewModel(
     init {
         // 转圈根因修复:seed 导入必须在进入电台页时触发(v3.5.0 只挂在重试按钮上,永不执行)
         viewModelScope.launch { radioRepository.ensureSeeded() }
+        // v3.7.1:分类默认 tab 首次进入自动加载(等 seed 就绪,避免在导入中的空表上算出空网格)
+        viewModelScope.launch {
+            radioRepository.seedState.first { it is RadioRepository.SeedState.Ready }
+            loadCountries()
+        }
         viewModelScope.launch {
             query.debounce(200).collect { kw ->
                 _searchResults.value = if (kw.isBlank()) emptyList()
