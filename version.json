@@ -1,7 +1,7 @@
 {
-  "versionCode": 30,
-  "versionName": "3.7.0",
-  "url": "https://testingcf.jsdelivr.net/gh/soloman7/carmusic@e168583151eef96e2e93746d9a0f95fa1a1297f6/carmusic-release.apk",
-  "notes": "v3.7.0:电台分类浏览——国家网格(中国首位)→中国按省份/他国按类型(流行/摇滚/新闻/古典/爵士/老歌/舞曲/财经/谈话/文艺/交通)→每类 top100,按实际收听量排序;分类 top 台发版侧逐台可达性探测,死台自动隐藏",
-  "sha256": "c5cd91574850a4dbe81cc7828cf48ecf2118617f093bf917a29a84d0cc7666f0"
+  "versionCode": 31,
+  "versionName": "3.7.1",
+  "url": "https://testingcf.jsdelivr.net/gh/soloman7/carmusic@ec24928e28173241bbe28bfb8f964124a5d961f1/carmusic-release.apk",
+  "notes": "v3.7.1:修复分类页转圈——进入电台页自动加载;国家/分类统计加浏览索引,毫秒级出列表;无需重新导入电台库",
+  "sha256": "bad14f2448c5eb7f24a3ef9597caa5b8bf9d0d113397cf28d9a5fd2db3e0b1b6"
 }
