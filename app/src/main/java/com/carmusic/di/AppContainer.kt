@@ -20,6 +20,8 @@ import com.carmusic.ui.playlist.PlaylistViewModel
 import com.carmusic.ui.search.SearchViewModel
 import com.carmusic.ui.settings.SettingsViewModel
 import com.carmusic.update.UpdateManager
+import com.carmusic.source.model.Playlist
+import com.carmusic.source.model.Track
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -56,7 +58,23 @@ class AppContainer(context: Context) {
     val eqManager: com.carmusic.playback.EqManager = com.carmusic.playback.EqManager(settingsRepository, playerManager)
     // v3.2 新增：自动更新 + 每周清理无效内容
     val updateManager: UpdateManager = UpdateManager(appContext, okHttpClient, settingsRepository)
-    val contentCleaner: ContentCleaner = ContentCleaner(settingsRepository, sourceManager, database, playerManager)
+    // v3.8：清理器走 ProbeGateway/PlaybackYield seam（可单测伪造），此处适配真实实现
+    val contentCleaner: ContentCleaner = ContentCleaner(
+        settingsRepository,
+        object : com.carmusic.maintenance.ProbeGateway {
+            override suspend fun ping(): Boolean = sourceManager.ping()
+            override suspend fun probeTrack(track: Track): Boolean =
+                sourceManager.getMediaSourceNoFallback(track)?.let { !it.isExpired() } ?: false
+            override suspend fun playlistTracks(playlist: Playlist): List<Track> =
+                sourceManager.getPlaylistTracks(playlist)
+            override suspend fun recommendedPlaylists(): List<Playlist> =
+                sourceManager.getRecommendedPlaylists(includeInvalid = true)
+        },
+        database,
+        object : com.carmusic.maintenance.PlaybackYield {
+            override suspend fun awaitNotPlaying() = playerManager.awaitNotPlaying()
+        }
+    )
 
     // 容器级协程：跟随设置变化把 SMTP host/port 注入 CrashHandler（崩溃日志导出用）
     private val containerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)

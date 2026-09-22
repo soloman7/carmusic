@@ -296,20 +296,27 @@ class SourceManager(okHttpClient: OkHttpClient, private val settingsRepository: 
      * 歌单曲目（按歌单 id 缓存 30 分钟）。
      * 剔除各平台预标记的无效单曲（网易 st<0/fee 1|4 → "grey"；QQ pay_play/msgid 解析时已过滤）——
      * 用户授意：播不了的歌不显示（2026-08-03）。
+     * v3.8：失败不再吞成空列表——网络故障/解析异常一律上抛 [SourceUnavailableException]，
+     * 调用方区分"真的没歌"与"没拉到"（UI 显示错误而非空态；ContentCleaner 不再把网络抖动
+     * 误读为"平台确认歌单无效"而拉黑一周）。
      */
     suspend fun getPlaylistTracks(playlist: Playlist): List<Track> {
-        val source = sources.find { it.platform == playlist.platform } ?: return emptyList()
+        val source = sources.find { it.platform == playlist.platform }
+            ?: throw SourceUnavailableException("playlist ${playlist.playlistId}: platform ${playlist.platform} not enabled")
         // 失败上抛 → ApiCache 不写缓存 → 30 分钟"空歌单"假象不可能出现
-        val tracks = runCatching {
+        return try {
             ApiCache.getOrPut("playlist:${playlist.playlistId}", ttlMs = 30 * 60_000) {
                 source.getPlaylistTracks(playlist)
             }
-        }.getOrElse { e ->
-            if (e is kotlinx.coroutines.CancellationException) throw e
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: SourceUnavailableException) {
             Log.w(TAG, "playlist tracks failed for ${playlist.playlistId}: ${e.message}")
-            return emptyList()
-        }
-        return tracks.filter { it.extra["grey"] != "1" }
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "playlist tracks failed for ${playlist.playlistId}: ${e.message}")
+            throw SourceUnavailableException("playlist tracks ${playlist.playlistId}: ${e.message}", e)
+        }.filter { it.extra["grey"] != "1" }
     }
 
     /**

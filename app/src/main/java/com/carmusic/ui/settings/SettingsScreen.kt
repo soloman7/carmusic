@@ -501,7 +501,7 @@ fun SettingsScreen(
         }
         Spacer(modifier = Modifier.height(4.dp))
         Text(
-            "清理收藏/历史里的死链歌曲、加载失败的推荐歌单和 30 天前的歌词缓存。",
+            "校验歌单有效性（失效的自动隐藏）、清理播放历史里的死链歌曲和 30 天前的歌词缓存。收藏歌曲不受影响，永不自动删除。",
             color = CarTextTertiary, style = MaterialTheme.typography.bodyMedium
         )
         Spacer(modifier = Modifier.height(8.dp))
@@ -529,7 +529,7 @@ fun SettingsScreen(
             is ContentCleaner.CleanState.Done -> {
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    "清理完成：删除死链歌曲 ${s.removedTracks} 首，无效歌单 ${s.invalidPlaylists} 个",
+                    "维护完成：历史死链清理 ${s.removedTracks} 首，失效歌单隐藏 ${s.invalidPlaylists} 个",
                     color = CarTextSecondary, style = MaterialTheme.typography.bodyMedium
                 )
             }

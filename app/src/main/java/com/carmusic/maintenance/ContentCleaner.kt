@@ -3,8 +3,6 @@ package com.carmusic.maintenance
 import android.util.Log
 import com.carmusic.data.AppDatabase
 import com.carmusic.data.SettingsRepository
-import com.carmusic.playback.PlayerManager
-import com.carmusic.source.SourceManager
 import com.carmusic.source.model.Track
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -19,28 +17,32 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * 每周清理无效内容（v3.2 新增，v3.3 加固）。
+ * 每周清理无效内容（v3.2 新增，v3.3 加固，v3.8 收藏红线对齐）。
  *
  * 项目无 WorkManager/常驻后台，"每周"= App 启动时检查距上次清理是否超 7 天
  * （AppContainer 启动后延迟触发，也可在设置页手动"立即清理"）。清理内容：
- * 1. 收藏/历史里的死链歌曲：逐首用 getMediaSourceNoFallback 轻量探测（不触发跨平台 fallback），
- *    连续两个清理周期（约 14 天）"平台确认无源"才删除——首轮失败只进 DataStore 挂账；
+ * 1. 历史里的死链歌曲：逐首探测（不触发跨平台 fallback），连续两个清理周期（约 14 天）
+ *    "平台确认无源"才从历史表删除——首轮失败只进 DataStore 挂账；
  *    出账靠下轮探测成功或期间播放成功（实时）。网络故障/超时/播放让路 = 证据不可信，不动账本。
- * 2. 无效歌单：推荐歌单逐个拉曲目，拉取失败或可播曲目为 0 的进 DataStore 黑名单
+ *    **收藏永不清理**（v3.8，用户数据红线）：探测判据是"原平台无源"，而播放有跨平台 fallback，
+ *    判定死 ≠ 不能播，删除即误伤；收藏歌即使原平台下架，播放期 fallback 仍可能换源可播。
+ * 2. 无效歌单：推荐歌单逐个拉曲目，**平台确认返回空**的进 DataStore 黑名单
  *    （invalid_playlists，合并写入；黑名单成员每轮仍被重新探测，恢复即自动移出）。
+ *    网络失败上抛 SourceUnavailableException → 证据不可信，不拉黑（v3.8：此前
+ *    getPlaylistTracks 把网络失败吞成空列表，一次抖动会把有效歌单误拉黑一周）。
  * 3. 过期歌词：LyricDao.deleteOlderThan(30 天)。
  *
  * 安全阀：
- * - 开跑前先打连通性哨兵（SourceManager.ping），网络不可用整轮放弃（本轮不更新清理时间，
+ * - 开跑前先打连通性哨兵（ProbeGateway.ping），网络不可用整轮放弃（本轮不更新清理时间，
  *   下次启动重试）；绝不基于"全网探测失败"销毁用户数据。
  * - 每次探测前检查播放状态，正在播放则挂起让路，维护流量不与播放抢带宽。
  * - 全程 runCatching 兜底，任何异常不崩溃、只记日志。
  */
 class ContentCleaner(
     private val settings: SettingsRepository,
-    private val sourceManager: SourceManager,
+    private val probe: ProbeGateway,
     private val database: AppDatabase,
-    private val playerManager: PlayerManager
+    private val yield: PlaybackYield
 ) {
 
     sealed class CleanState {
@@ -72,7 +74,7 @@ class ContentCleaner(
             runCatching {
                 // 哨兵不过 = 网络死，全部探测结果不可信。静默轮空（force 手动触发时给出反馈），
                 // 不更新 lastCleanupAt，让下个启动窗口重试。
-                if (!sourceManager.ping()) {
+                if (!probe.ping()) {
                     Log.w(TAG, "cleanup skipped: connectivity sentinel failed")
                     _state.value = if (force) {
                         CleanState.Error("网络不可用，本次未清理")
@@ -97,8 +99,9 @@ class ContentCleaner(
     }
 
     /**
-     * 探测收藏+历史（按 trackId 去重），连续两轮失败才从两张表删掉；返回删除数。
-     * 上轮挂账（pendingDeadTracks）里本轮恢复可播的自动出账。
+     * 探测**历史**死链（按 trackId 去重），连续两轮失败才从历史表删掉；返回删除数。
+     * 收藏不进探测列表、永不被删（v3.8 红线，见类注释）；上轮挂账（pendingDeadTracks）
+     * 里本轮恢复可播的自动出账。
      * v3.4.3 证据语义（修正 v3.4 把 DELETE 证据绑在"返回已过期 URL"上的不可达回归）：
      * - true  = 拿到可用播放地址（出账）
      * - false = 平台**确认无源**（provider 返回 null；挂账/删除的唯一删除性证据）
@@ -107,15 +110,11 @@ class ContentCleaner(
      * 会被误读为"确认无源"——由 ping 哨兵 + 两周期确认 + 播放成功实时出账三道闸兜底。
      */
     private suspend fun cleanDeadTracks(): Int {
-        val favoriteDao = database.favoriteDao()
         val historyDao = database.historyDao()
         // 历史表只保留最近 200 条（insertAndTrim），取首帧全量即可
         val history = historyDao.getRecentFlow(200).first().map { it.toTrack() }
-        val favorites = favoriteDao.getAll()
-        val allIds = (favorites.map { it.trackId } + history.map { it.trackId }).toSet()
-        val probeList = (favorites.map { it.toTrack() } + history)
-            .distinctBy { it.trackId }
-            .take(MAX_PROBE_PER_RUN)
+        val historyIds = history.map { it.trackId }.toSet()
+        val probeList = history.distinctBy { it.trackId }.take(MAX_PROBE_PER_RUN)
 
         val previouslyPending = settings.pendingDeadTracks.first()
         val ledger = DeadTrackLedger(previouslyPending)
@@ -126,14 +125,13 @@ class ContentCleaner(
                 async {
                     val probed: Boolean? = semaphore.withPermit {
                         // 让路也要有界：车机上音乐常播，无界等待会饿死整轮清理并锁死手动通道
-                        val free = withTimeoutOrNull(PLAY_AWAIT_TIMEOUT_MS) { playerManager.awaitNotPlaying() }
+                        val free = withTimeoutOrNull(PLAY_AWAIT_TIMEOUT_MS) { yield.awaitNotPlaying() }
                         if (free == null) {
                             null
                         } else {
                             withTimeoutOrNull(TRACK_PROBE_TIMEOUT_MS) {
                                 try {
-                                    sourceManager.getMediaSourceNoFallback(track)
-                                        ?.let { !it.isExpired() } ?: false
+                                    probe.probeTrack(track)
                                 } catch (e: com.carmusic.source.SourceUnavailableException) {
                                     null
                                 }
@@ -145,10 +143,9 @@ class ContentCleaner(
                             Log.d(TAG, "probe inconclusive, no ledger change: ${track.trackId}")
                         else -> when (ledger.onProbed(track.trackId, probed)) {
                             DeadTrackLedger.Decision.DELETE -> {
-                                favoriteDao.deleteById(track.trackId)
                                 historyDao.deleteById(track.trackId)
                                 synchronized(this@ContentCleaner) { removed++ }
-                                Log.d(TAG, "removed dead track: ${track.trackId} ${track.title}")
+                                Log.d(TAG, "removed dead track from history: ${track.trackId} ${track.title}")
                             }
                             DeadTrackLedger.Decision.PENDING ->
                                 Log.d(TAG, "track probe failed, pending next cycle: ${track.trackId}")
@@ -158,9 +155,9 @@ class ContentCleaner(
                 }
             }.forEach { it.await() }
         }
-        // 修剪挂账：只保留仍存在于收藏/历史的曲目——用户删掉挂账歌再重新收藏同 trackId 时，
-        // 旧挂账会把两周期确认退化成单周期判死
-        settings.setPendingDeadTracks(ledger.pendingAfterRun() intersect allIds)
+        // 修剪挂账：只保留仍存在于历史表的曲目——收藏不参与删除，指向收藏的旧挂账一并修剪；
+        // 用户删掉挂账歌再重新播放时，旧挂账会把两周期确认退化成单周期判死
+        settings.setPendingDeadTracks(ledger.pendingAfterRun() intersect historyIds)
         return removed
     }
 
@@ -173,20 +170,20 @@ class ContentCleaner(
      *    v3.4 的 merge 把"探了但超时"的歌单误当"验证通过"放出来，重新引入振荡。
      */
     private suspend fun cleanInvalidPlaylists(): Int {
-        val playlists = sourceManager.getRecommendedPlaylists(includeInvalid = true)
+        val playlists = probe.recommendedPlaylists()
         val semaphore = Semaphore(2)
         val verdicts = coroutineScope {
             playlists.map { playlist ->
                 async {
-                    // 三态：true=有可播曲目 / false=确认无效 / null=超时（证据不可信）
+                    // 三态：true=有可播曲目 / false=平台确认歌单为空 / null=网络故障或播放让路（证据不可信）
                     val ok: Boolean? = semaphore.withPermit {
-                        val free = withTimeoutOrNull(PLAY_AWAIT_TIMEOUT_MS) { playerManager.awaitNotPlaying() }
+                        val free = withTimeoutOrNull(PLAY_AWAIT_TIMEOUT_MS) { yield.awaitNotPlaying() }
                         if (free == null) {
                             null
                         } else {
                             withTimeoutOrNull(PLAYLIST_PROBE_TIMEOUT_MS) {
                                 try {
-                                    sourceManager.getPlaylistTracks(playlist).let { it.isNotEmpty() }
+                                    probe.playlistTracks(playlist).let { it.isNotEmpty() }
                                 } catch (e: com.carmusic.source.SourceUnavailableException) {
                                     null
                                 }
@@ -206,11 +203,6 @@ class ContentCleaner(
         if (confirmedInvalid.isNotEmpty()) Log.i(TAG, "invalid playlists: $confirmedInvalid")
         return confirmedInvalid.size
     }
-
-    private fun com.carmusic.data.FavoriteEntity.toTrack() = Track(
-        platform = platform, id = songId, title = title, artist = artist,
-        album = album, coverUrl = coverUrl, duration = duration, extra = extra
-    )
 
     private fun com.carmusic.data.HistoryEntity.toTrack() = Track(
         platform = platform, id = songId, title = title, artist = artist,
