@@ -87,6 +87,11 @@ class PlayerTransitionFenceTest {
 
         pm.handleTransition(item, Player.MEDIA_ITEM_TRANSITION_REASON_AUTO)
 
+        // 历史写入经 scope.launch + Room 挂起执行,与断言存在竞态(CI Linux 实测抓出):
+        // 用 Room Flow 的失效重查等写入落地,超时 5s 视为回归
+        kotlinx.coroutines.withTimeout(5_000) {
+            db.historyDao().getRecentFlow(200).first { it.isNotEmpty() }
+        }
         assertEquals("歌曲历史行为不变(回归锚点)", 1, db.historyDao().getRecentFlow(200).first().size)
         assertEquals(track.trackId, pm.currentTrack.value?.trackId)
     }
