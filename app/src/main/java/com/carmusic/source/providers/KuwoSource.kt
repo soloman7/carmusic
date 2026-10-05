@@ -35,7 +35,6 @@ class KuwoSource(private val client: OkHttpClient) : MusicSource {
                 "&rformat=json&mobi=1&show_copyright_off=1&pn=${page - 1}&rn=$limit&all=$encodedKw"
 
             val json = client.getJson(url, mapOf("User-Agent" to CHROME_UA))
-                ?: return@withContext emptyList()
             val list = json.getAsJsonArray("abslist") ?: return@withContext emptyList()
 
             list.mapNotNull { el ->
@@ -97,7 +96,6 @@ class KuwoSource(private val client: OkHttpClient) : MusicSource {
             val url = "https://m.kuwo.cn/newh5/singles/songinfoandlrc?musicId=$numericId"
 
             val json = client.getJson(url, mapOf("User-Agent" to CHROME_UA))
-                ?: return@withContext null
             val lrcArray = json.getAsJsonObject("data")?.getAsJsonArray("lrclist")
                 ?: return@withContext null
 
@@ -148,7 +146,6 @@ class KuwoSource(private val client: OkHttpClient) : MusicSource {
                 "?from=pc&fmt=json&type=bang&data=content&id=$bangId&rn=100"
 
             val json = client.getJson(url, mapOf("User-Agent" to CHROME_UA))
-                ?: return@withContext emptyList()
             val list = json.getAsJsonArray("musiclist") ?: return@withContext emptyList()
 
             list.mapNotNull { el ->

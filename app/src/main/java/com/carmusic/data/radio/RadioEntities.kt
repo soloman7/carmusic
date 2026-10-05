@@ -150,6 +150,18 @@ interface RadioFavoriteDao {
     @Query("SELECT * FROM radio_favorites ORDER BY sortOrder ASC")
     fun getAllFlow(): Flow<List<RadioFavoriteEntity>>
 
+    /**
+     * 收藏+台站状态单查询(v3.9 去除逐台 getByUuid 的 N+1):
+     * LEFT JOIN 保证台站被删/不存在时收藏行仍返回(health 等三列为 null → DELETED)。
+     */
+    @Query(
+        """SELECT f.*, s.health AS health, s.deleted AS deleted, s.localDeadUntil AS localDeadUntil
+           FROM radio_favorites f
+           LEFT JOIN radio_stations s ON s.stationUuid = f.stationUuid
+           ORDER BY f.sortOrder ASC"""
+    )
+    fun getAllWithStationFlow(): Flow<List<RadioFavoriteWithStation>>
+
     @Query("SELECT * FROM radio_favorites ORDER BY sortOrder ASC")
     suspend fun getAll(): List<RadioFavoriteEntity>
 
@@ -178,6 +190,14 @@ data class RadioLocalState(
     val localDeadUntil: Long,
     val localDeadCount: Int,
     val deleted: Boolean
+)
+
+/** 收藏+台站状态联查行(v3.9):台站缺失时三列为 null */
+data class RadioFavoriteWithStation(
+    @androidx.room.Embedded val favorite: RadioFavoriteEntity,
+    val health: Int?,
+    val deleted: Boolean?,
+    val localDeadUntil: Long?
 )
 
 /** 国家分组卡(v6-D-A 第一级):code=ISO 码,clicks=可见台总收听量 */

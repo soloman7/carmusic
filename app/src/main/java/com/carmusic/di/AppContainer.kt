@@ -89,6 +89,11 @@ class AppContainer(context: Context) {
         containerScope.launch {
             delay(5_000)
             runCatching { updateManager.checkForUpdate() }
+            // v3.9:检查通道(ghproxy/raw)间歇抖动,失败静默重试一次,当轮不再放弃
+            if (updateManager.state.value is UpdateManager.UpdateState.Error) {
+                delay(60_000)
+                runCatching { updateManager.checkForUpdate() }
+            }
         }
         containerScope.launch {
             delay(10_000)

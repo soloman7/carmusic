@@ -1,0 +1,35 @@
+# v3.9:质量门禁不再单点依赖本机 agent——每次 push/PR 自动跑全量单测。
+# 音源回归脚本(test_playlist_sources.py)依赖从中国大陆访问各音源,GitHub Actions
+# 的海外 IP 会大面积误报(QQ 搜索 404 已实测),故不进 CI,维持每周发版本地执行。
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+
+      - name: Unit tests
+        run: |
+          chmod +x gradlew
+          ./gradlew testDebugUnitTest --stacktrace
+
+      - name: Publish test summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: app/build/reports/tests/testDebugUnitTest/
+          retention-days: 7

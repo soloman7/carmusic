@@ -37,7 +37,7 @@ class MiguSource(private val client: OkHttpClient) : MusicSource {
             val json = client.getJson(
                 url,
                 mapOf("User-Agent" to CHROME_UA, "Referer" to "https://m.music.migu.cn/")
-            ) ?: return@withContext emptyList()
+            )
             val musics = json.getAsJsonArray("musics") ?: return@withContext emptyList()
 
             musics.mapNotNull { el ->
@@ -129,7 +129,7 @@ class MiguSource(private val client: OkHttpClient) : MusicSource {
             val json = client.getJson(
                 url,
                 mapOf("User-Agent" to CHROME_UA, "Referer" to "https://music.migu.cn/")
-            ) ?: return@withContext null
+            )
             // 无歌词时返回 JsonNull，直接 .asString 会抛
             val lrc = json.get("lyric")?.takeIf { !it.isJsonNull }?.asString
                 ?: return@withContext null
@@ -151,7 +151,7 @@ class MiguSource(private val client: OkHttpClient) : MusicSource {
             val json = client.getJson(
                 url,
                 mapOf("User-Agent" to CHROME_UA, "channel" to CHANNEL)
-            ) ?: return@withContext emptyList()
+            )
             val items = json.getAsJsonObject("data")
                 ?.getAsJsonArray("contentItemList")?.firstOrNull()?.asJsonObject
                 ?.getAsJsonArray("itemList")
@@ -187,7 +187,7 @@ class MiguSource(private val client: OkHttpClient) : MusicSource {
             val json = client.getJson(
                 url,
                 mapOf("User-Agent" to CHROME_UA, "channel" to CHANNEL)
-            ) ?: return@withContext emptyList()
+            )
             val songs = json.getAsJsonObject("data")?.getAsJsonArray("songList")
                 ?: return@withContext emptyList()
             songs.mapNotNull { el ->

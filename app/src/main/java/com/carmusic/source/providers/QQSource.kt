@@ -55,7 +55,7 @@ class QQSource(private val client: OkHttpClient) : MusicSource {
                 "https://u.y.qq.com/cgi-bin/musicu.fcg",
                 payload.toRequestBody("application/json".toMediaType()),
                 mapOf("User-Agent" to CHROME_UA, "Referer" to "https://y.qq.com/")
-            ) ?: return@withContext emptyList()
+            )
             val list = json.getAsJsonObject("req")
                 ?.getAsJsonObject("data")
                 ?.getAsJsonObject("body")
@@ -135,7 +135,7 @@ class QQSource(private val client: OkHttpClient) : MusicSource {
                 "https://u.y.qq.com/cgi-bin/musicu.fcg",
                 payload.toRequestBody("application/json".toMediaType()),
                 mapOf("User-Agent" to CHROME_UA, "Referer" to "https://y.qq.com/")
-            ) ?: return@withContext null
+            )
             val data = json.getAsJsonObject("req_0")?.getAsJsonObject("data")
                 ?: return@withContext null
             val midurlinfo = data.getAsJsonArray("midurlinfo") ?: return@withContext null
@@ -168,7 +168,7 @@ class QQSource(private val client: OkHttpClient) : MusicSource {
             val json = client.getJson(
                 url,
                 mapOf("User-Agent" to CHROME_UA, "Referer" to "https://y.qq.com/")
-            ) ?: return@withContext null
+            )
             val lyricB64 = json.get("lyric")?.asString ?: return@withContext null
             val lrc = String(android.util.Base64.decode(lyricB64, android.util.Base64.DEFAULT))
             val transB64 = json.get("trans")?.asString
@@ -225,10 +225,13 @@ class QQSource(private val client: OkHttpClient) : MusicSource {
     private suspend fun fetchToplistCover(topId: String): String? {
         val url = "https://c.y.qq.com/v8/fcg-bin/fcg_v8_toplist_cp.fcg" +
             "?topid=$topId&num=1&page=1&type=1&format=json"
-        val json = client.getJson(
-            url,
-            mapOf("User-Agent" to CHROME_UA, "Referer" to "https://y.qq.com/")
-        ) ?: return null
+        // 封面是装饰性数据：请求失败不拖垮整个榜单分区（getRecommendedPlaylists 的 async 无外层 catch）
+        val json = runCatching {
+            client.getJson(
+                url,
+                mapOf("User-Agent" to CHROME_UA, "Referer" to "https://y.qq.com/")
+            )
+        }.getOrNull() ?: return null
         return json.optObj("topinfo")?.optStr("pic_v12")?.takeIf { it.isNotBlank() }?.https()
     }
 
@@ -247,7 +250,7 @@ class QQSource(private val client: OkHttpClient) : MusicSource {
             val json = client.getJson(
                 url,
                 mapOf("User-Agent" to CHROME_UA, "Referer" to "https://y.qq.com/")
-            ) ?: return@withContext emptyList()
+            )
             json.getAsJsonObject("data")?.getAsJsonArray("list")?.mapNotNull { el ->
                 try {
                     val d = el.asJsonObject

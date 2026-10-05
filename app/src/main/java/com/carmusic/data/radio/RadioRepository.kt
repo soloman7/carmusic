@@ -563,17 +563,17 @@ class RadioRepository(
     data class FavoriteWithStatus(val favorite: RadioFavoriteEntity, val status: StationStatus)
 
     fun favoritesWithStatusFlow(): Flow<List<FavoriteWithStatus>> =
-        favoriteDao.getAllFlow().map { favs ->
+        favoriteDao.getAllWithStationFlow().map { rows ->
             val now = System.currentTimeMillis()
-            favs.map { f ->
-                val s = stationDao.getByUuid(f.stationUuid)
+            rows.map { r ->
                 val status = when {
-                    s == null || s.deleted -> StationStatus.DELETED
-                    s.health == 0 -> StationStatus.SERVER_DOWN
-                    s.localDeadUntil > now -> StationStatus.LOCAL_DEAD
+                    // 台站行缺失(语料未含/已物理清除)与墓碑同等对待:收藏页全量显示,徽标"已失效"
+                    r.health == null || r.deleted == true -> StationStatus.DELETED
+                    r.health == 0 -> StationStatus.SERVER_DOWN
+                    (r.localDeadUntil ?: 0L) > now -> StationStatus.LOCAL_DEAD
                     else -> StationStatus.OK
                 }
-                FavoriteWithStatus(f, status)
+                FavoriteWithStatus(r.favorite, status)
             }
         }
 
@@ -639,6 +639,8 @@ class RadioRepository(
     suspend fun reportClick(uuid: String) {
         val now = System.currentTimeMillis()
         synchronized(clickAt) {
+            // 顺手清理过期节流项(map 否则随收藏台播放历史无界增长)
+            clickAt.entries.removeIf { now - it.value > CLICK_THROTTLE_MS }
             if (now - (clickAt[uuid] ?: 0) < CLICK_THROTTLE_MS) return
             clickAt[uuid] = now
         }

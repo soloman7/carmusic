@@ -27,8 +27,8 @@ class NeteaseSource(private val client: OkHttpClient) : MusicSource {
 
     private val baseUrl = "https://music.163.com"
 
-    /** weapi 公共请求块：加密 → FormBody → POST → 解析 JsonObject */
-    private suspend fun weapi(path: String, payload: String): JsonObject? {
+    /** weapi 公共请求块：加密 → FormBody → POST → 解析。请求失败抛 SourceUnavailableException（v3.9 严格化） */
+    private suspend fun weapi(path: String, payload: String): JsonObject {
         val (params, encSecKey) = NeteaseCrypto.encrypt(payload)
         val body = FormBody.Builder()
             .add("params", params)
@@ -68,7 +68,6 @@ class NeteaseSource(private val client: OkHttpClient) : MusicSource {
         withContext(Dispatchers.IO) {
             val payload = """{"s":"${keyword.escapeJson()}","type":1,"offset":${(page - 1) * limit},"limit":$limit,"csrf_token":""}"""
             val json = weapi("/weapi/cloudsearch/get/web", payload)
-                ?: return@withContext emptyList()
             val songs = json.getAsJsonObject("result")?.getAsJsonArray("songs")
                 ?: return@withContext emptyList()
             songs.mapNotNull(::parseTrack)
@@ -78,7 +77,7 @@ class NeteaseSource(private val client: OkHttpClient) : MusicSource {
         withContext(Dispatchers.IO) {
             val payload = """{"ids":"[${track.id.escapeJson()}]","level":"standard","encodeType":"aac","csrf_token":""}"""
             val json = weapi("/weapi/song/enhance/player/url/v1", payload)
-            val officialUrl = json?.getAsJsonArray("data")?.takeIf { it.size() > 0 }
+            val officialUrl = json.getAsJsonArray("data")?.takeIf { it.size() > 0 }
                 ?.get(0)?.asJsonObject?.get("url")
                 ?.takeIf { !it.isJsonNull }?.asString
             if (officialUrl != null) {
@@ -115,7 +114,7 @@ class NeteaseSource(private val client: OkHttpClient) : MusicSource {
     override suspend fun getLyric(track: Track): LyricResult? =
         withContext(Dispatchers.IO) {
             val payload = """{"id":"${track.id.escapeJson()}","lv":-1,"tv":-1,"csrf_token":""}"""
-            val json = weapi("/weapi/song/lyric", payload) ?: return@withContext null
+            val json = weapi("/weapi/song/lyric", payload)
             val lrc = json.getAsJsonObject("lrc")?.get("lyric")?.asString
                 ?: return@withContext null
             val tlrc = json.getAsJsonObject("tlyric")?.get("lyric")?.asString
@@ -192,7 +191,7 @@ class NeteaseSource(private val client: OkHttpClient) : MusicSource {
     override suspend fun getPlaylistSquare(offset: Int): List<Playlist> =
         withContext(Dispatchers.IO) {
             val payload = """{"cat":"全部","order":"hot","limit":30,"offset":$offset,"total":true,"csrf_token":""}"""
-            val json = weapi("/weapi/playlist/list", payload) ?: return@withContext emptyList()
+            val json = weapi("/weapi/playlist/list", payload)
             json.optArr("playlists")?.mapNotNull { el ->
                 try {
                     val p = el.asJsonObject
@@ -237,12 +236,16 @@ class NeteaseSource(private val client: OkHttpClient) : MusicSource {
             // id 拼进 JSON 且不加引号，必须是纯数字（防注入）
             val plId = playlist.id.toLongOrNull() ?: return@withContext emptyList()
             val payload = """{"id":$plId,"n":100000,"s":8,"csrf_token":""}"""
-            // v6 匿名调用可能截断，空结果回退 v3
-            var detailJson = weapi("/weapi/v6/playlist/detail", payload)
+            // v6 匿名调用可能截断/失效，空结果或请求失败都回退 v3；两次都请求失败才上抛
+            // （证据不可信 ≠ 平台确认空——清理器与 UI 不得把网络故障误读为"无曲目"，v3.9）
+            val v6 = runCatching { weapi("/weapi/v6/playlist/detail", payload) }
+            var detailJson = v6.getOrNull()
             var tracks = detailJson?.optObj("playlist")?.optArr("tracks")
             if (tracks == null || tracks.size() == 0) {
-                detailJson = weapi("/weapi/v3/playlist/detail", payload)
+                val v3 = runCatching { weapi("/weapi/v3/playlist/detail", payload) }
+                detailJson = v3.getOrNull()
                 tracks = detailJson?.optObj("playlist")?.optArr("tracks")
+                if (tracks == null && v6.isFailure && v3.isFailure) throw v6.exceptionOrNull()!!
             }
             tracks ?: return@withContext emptyList()
             // privileges 与 tracks 平行：st<0 即无版权灰歌；fee 1=VIP 4=付费专辑（匿名必播不了）

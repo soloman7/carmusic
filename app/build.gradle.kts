@@ -22,8 +22,8 @@ android {
         applicationId = "com.carmusic"
         minSdk = 26
         targetSdk = 35
-        versionCode = 32
-        versionName = "3.8.0"
+        versionCode = 33
+        versionName = "3.9.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -177,4 +177,5 @@ dependencies {
     testImplementation(libs.coroutines.test)
     testImplementation(libs.mockito.kotlin)
     testImplementation(libs.androidx.test.core)
+    testImplementation(libs.okhttp.mockwebserver)
 }

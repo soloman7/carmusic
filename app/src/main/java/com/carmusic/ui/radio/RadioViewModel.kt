@@ -206,6 +206,9 @@ class RadioViewModel(
         viewModelScope.launch {
             radioRepository.seedState.first { it is RadioRepository.SeedState.Ready }
             loadCountries()
+            // v3.9:电台页就绪即补一次周期同步——容器侧任务挂在启动 30s 后,冷启动即走的
+            // 场景(进程被杀)会错过它;syncIfDue 自带 7 天门禁与互斥,重复调用无副作用
+            runCatching { radioRepository.syncIfDue() }
         }
         viewModelScope.launch {
             query.debounce(200).collect { kw ->

@@ -113,7 +113,10 @@ class PlaylistViewModel(
         viewModelScope.launch {
             try {
                 _playlists.value = sourceManager.getRecommendedPlaylists()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
+                // v3.9 起此路径真实可达:全平台失败上抛 SourceUnavailableException(此前为死代码)
                 _error.value = "歌单加载失败，请检查网络"
             } finally {
                 _loading.value = false
@@ -129,6 +132,8 @@ class PlaylistViewModel(
         selectJob = viewModelScope.launch {
             try {
                 _tracks.value = sourceManager.getPlaylistTracks(playlist)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _error.value = "歌曲加载失败"
             } finally {
@@ -158,6 +163,8 @@ class PlaylistViewModel(
                 } else {
                     playerManager.playAll(tracks, 0)
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _error.value = "「${playlist.name}」加载失败"
             } finally {

@@ -190,7 +190,12 @@ class ContentCleaner(
                             }
                         }
                     }
-                    playlist.playlistId to ok
+                    playlist.playlistId to when {
+                        // v3.9:Jamendo 同一请求约 1/3 概率返回空(2026-09-16 回归实测,punk 连续 6 次空),
+                        // HTTP-200 空列表不是可靠的"平台确认无效"证据 → 视为不可信,不拉黑
+                        ok == false && playlist.platform in EMPTY_UNRELIABLE_PLATFORMS -> null
+                        else -> ok
+                    }
                 }
             }.map { it.await() }
         }
@@ -219,5 +224,8 @@ class ContentCleaner(
 
         /** 播放避让上限：车机上音乐常播，无界等待会让整轮清理饿死并锁死手动通道 */
         private const val PLAY_AWAIT_TIMEOUT_MS = 60_000L
+
+        /** 这些平台的"HTTP 200 + 空列表"不可靠(服务端抖动),清理器不得据此拉黑歌单 */
+        private val EMPTY_UNRELIABLE_PLATFORMS = setOf("jamendo")
     }
 }

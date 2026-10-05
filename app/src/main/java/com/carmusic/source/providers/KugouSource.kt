@@ -86,7 +86,6 @@ class KugouSource(private val client: OkHttpClient) : MusicSource {
             val url = "https://m.kugou.com/app/i/getSongInfo.php?cmd=playInfo&hash=$hash"
 
             val json = client.getJson(url, mapOf("User-Agent" to CHROME_UA))
-                ?: return@withContext null
             // url 在 JSON 顶层；VIP 歌返回 "url":"" + "error":"需要付费"，判空走 fallback
             val playUrl = json.get("url")?.takeIf { !it.isJsonNull }?.asString
                 ?.takeIf { it.isNotBlank() } ?: return@withContext null
@@ -105,7 +104,6 @@ class KugouSource(private val client: OkHttpClient) : MusicSource {
                 val searchUrl = "https://krcs.kugou.com/search" +
                     "?ver=1&man=yes&client=mobi&hash=${track.id}"
                 val searchJson = client.getJson(searchUrl, mapOf("User-Agent" to CHROME_UA))
-                    ?: return@withContext null
                 val candidates = searchJson.getAsJsonArray("candidates")
                 if (candidates == null || candidates.size() == 0) return@withContext null
                 val item = candidates[0].asJsonObject
@@ -116,7 +114,6 @@ class KugouSource(private val client: OkHttpClient) : MusicSource {
                 val dlUrl = "https://krcs.kugou.com/download" +
                     "?ver=1&client=pc&id=$id&accesskey=$accessKey&fmt=lrc&charset=utf8"
                 val dlJson = client.getJson(dlUrl, mapOf("User-Agent" to CHROME_UA))
-                    ?: return@withContext null
                 val encoded = dlJson.get("content")?.asString ?: return@withContext null
                 val lrc = String(android.util.Base64.decode(encoded, android.util.Base64.DEFAULT))
                 LyricResult(lrc = lrc)
@@ -153,7 +150,6 @@ class KugouSource(private val client: OkHttpClient) : MusicSource {
             val url = "https://m.kugou.com/plist/index?json=true&page=$page"
 
             val json = client.getJson(url, mapOf("User-Agent" to CHROME_UA))
-                ?: return@withContext emptyList()
             val list = json.optObj("plist")?.optObj("list")?.optArr("info")
                 ?: return@withContext emptyList()
 

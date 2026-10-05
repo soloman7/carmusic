@@ -76,10 +76,12 @@ class PlayerManager(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
-    private var retryCount = 0
-    private val maxRetry = 2   // 车机场景 6 秒无声已难接受，2 次重试后自动跳歌
     private var retryJob: Job? = null
-    private var consecutiveFailTrack: String? = null
+
+    // v3.9 拆分:错误决策与会话持久化为纯逻辑组件(可单测),PlayerManager 只留编排与副作用
+    internal val musicErrorPolicy = MusicErrorPolicy(maxRetry = 2)
+    internal val radioErrorPolicy = RadioErrorPolicy()
+    private val sessionStore = PlaybackSessionStore(database.playbackStateDao())
 
     // 播放模式 + 队列导航（索引数学全在 QueueNavigator，可单测）
     private val navigator = QueueNavigator()
@@ -93,11 +95,8 @@ class PlayerManager(
     private val _currentStation = MutableStateFlow<RadioNowPlaying?>(null)
     val currentStation: StateFlow<RadioNowPlaying?> = _currentStation.asStateFlow()
 
-    /** 电台错误重起流:一次会话内只本地重试一次(D5 本地优先,API 不在恢复路径) */
-    private var radioRestartUsed = false
-
-    // 自动跳歌保护：连续跳过整轮队列仍未成功 → 放弃，避免无限跳歌
-    private var consecutiveSkips = 0
+    /** 电台错误重起流决策(一次会话内只本地重试一次,D5 本地优先,API 不在恢复路径) */
+    // 由 radioErrorPolicy 承担
 
     // SHUFFLE 自然播完重定向用：记录上一个 timeline 索引
     private var lastTimelineIndex = 0
@@ -110,10 +109,10 @@ class PlayerManager(
     private var pendingPlay: Track? = null
 
     // ---- 播放会话持久化（DiLink 杀进程后恢复"停车前听到哪"）----
-    private data class RestoredPlayback(val queue: List<Track>, val index: Int, val positionMs: Long)
+    // 快照结构与 DAO 存取已拆至 PlaybackSessionStore
 
     /** 已从 DB 读出但尚未消费的快照：UI 先显示上次播放内容，用户点播放/切歌才真正重建队列 */
-    private var restoredSnapshot: RestoredPlayback? = null
+    private var restoredSnapshot: PlaybackSessionStore.Snapshot? = null
 
     /** 恢复播放待消费的进度（ms）与目标 trackId：恢复队列首次 READY 时 seek 过去，-1 表示无 */
     private var pendingRestorePositionMs = -1L
@@ -149,18 +148,11 @@ class PlayerManager(
         }
         // 读取上次播放会话快照（只读不播：等用户点播放/切歌再重建队列）
         scope.launch {
-            val saved = runCatching { database.playbackStateDao().get() }.getOrNull() ?: return@launch
-            val queue = PlaybackSessionCodec.decode(saved.queueJson) ?: return@launch
-            if (queue.isEmpty()) return@launch
-            val snapshot = RestoredPlayback(
-                queue,
-                saved.currentIndex.coerceIn(0, queue.size - 1),
-                saved.positionMs.coerceAtLeast(0L)
-            )
+            val snapshot = runCatching { sessionStore.load() }.getOrNull() ?: return@launch
             restoredSnapshot = snapshot
             // UI 先呈现上次内容（timeline 仍为空，点播放才真正恢复）
-            _queue.value = queue
-            _currentTrack.value = queue.getOrNull(snapshot.index)
+            _queue.value = snapshot.queue
+            _currentTrack.value = snapshot.queue.getOrNull(snapshot.index)
         }
     }
 
@@ -234,13 +226,12 @@ class PlayerManager(
     }
 
     private fun startRadio(uuid: String, name: String, url: String, favicon: String, codec: String, bitrate: Int, isHls: Boolean) {
-        retryCount = 0
-        consecutiveFailTrack = null
+        musicErrorPolicy.onSessionChanged()
         retryJob?.cancel()
         playAllJob?.cancel()
         playAllJob = null
         restoredSnapshot = null
-        radioRestartUsed = false
+        radioErrorPolicy.onSessionStart()
         _currentTrack.value = null
         scope.launch {
             _error.value = null
@@ -301,32 +292,26 @@ class PlayerManager(
             return
         }
         val name = _currentStation.value?.name ?: "电台"
-        if (radioRestartUsed) {
-            radioRestartUsed = false
-            scope.launch {
-                runCatching { radioRepository.markLocalDead(uuid) }
-                if (radioRepository.isDrivingNow()) {
-                    val next = runCatching { radioRepository.nextVisibleFavoriteAfter(uuid) }.getOrNull()
-                    if (next != null) {
-                        _error.value = "「$name」中断，已切到下一收藏台"
-                        playRadio(next)
-                    } else {
-                        _error.value = "「$name」中断，且没有可用的收藏台"
+        when (radioErrorPolicy.onError()) {
+            RadioErrorPolicy.Phase.RESTART -> {
+                _error.value = radioErrorPolicy.reconnectMessage()
+                retryJob?.cancel()
+                retryJob = scope.launch {
+                    delay(1000L)
+                    runCatching {
+                        controller?.prepare()
+                        controller?.play()
                     }
-                } else {
-                    _error.value = "「$name」播放中断，该台可能已下线"
                 }
             }
-        } else {
-            radioRestartUsed = true
-            _error.value = "信号中断，重新连接…"
-            retryJob?.cancel()
-            retryJob = scope.launch {
-                delay(1000L)
-                runCatching {
-                    controller?.prepare()
-                    controller?.play()
-                }
+            RadioErrorPolicy.Phase.DEAD -> scope.launch {
+                runCatching { radioRepository.markLocalDead(uuid) }
+                val driving = radioRepository.isDrivingNow()
+                val next = if (driving) {
+                    runCatching { radioRepository.nextVisibleFavoriteAfter(uuid) }.getOrNull()
+                } else null
+                _error.value = radioErrorPolicy.deadMessage(name, driving, next != null)
+                if (next != null) playRadio(next)
             }
         }
     }
@@ -334,7 +319,7 @@ class PlayerManager(
     private val playerListener = object : Player.Listener {
         override fun onIsPlayingChanged(playing: Boolean) {
             _isPlaying.value = playing
-            if (playing) consecutiveSkips = 0   // 有歌成功出声，重置跳歌保护
+            if (playing) musicErrorPolicy.onPlaybackSuccess()   // 有歌成功出声，重置跳歌保护
             else persistNow()   // 暂停点即存档点（含熄火、导航打断）
         }
 
@@ -392,7 +377,7 @@ class PlayerManager(
                 _duration.value = controller?.duration ?: 0L
                 // 电台 fence:无恢复 seek、无 deadledger 出账;READY = 重起流成功 + click 上报
                 if (PlaybackTarget.isRadioMediaId(controller?.currentMediaItem?.mediaId)) {
-                    radioRestartUsed = false
+                    radioErrorPolicy.onPlaybackReady()
                     _currentStation.value?.uuid?.let { uuid ->
                         scope.launch { runCatching { radioRepository.reportClick(uuid) } }
                     }
@@ -422,39 +407,33 @@ class PlayerManager(
         fun handleMusicPlayerError(error: PlaybackException) {
             Log.e(TAG, "playback error: ${error.message}", error)
             val track = _currentTrack.value
-            // 切歌则重置计数
-            if (track?.trackId != consecutiveFailTrack) {
-                retryCount = 0
-                consecutiveFailTrack = track?.trackId
-            }
-            if (track == null || retryCount >= maxRetry) {
-                retryJob?.cancel()
-                val count = controller?.mediaItemCount ?: 0
-                if (count > 1 && consecutiveSkips < count) {
-                    // 重试耗尽：自动跳下一首而不是卡死在错误条
-                    consecutiveSkips++
-                    _error.value = "「${track?.title ?: "当前歌曲"}」播放失败，自动跳到下一首"
-                    retryCount = 0
-                    consecutiveFailTrack = null
-                    next()
-                } else {
-                    _error.value = if (count > 1) {
-                        "列表歌曲均播放失败，请检查网络后重试"
-                    } else {
-                        "播放失败（已重试 $maxRetry 次）：${error.message}"
+            musicErrorPolicy.onTrackSwitched(track?.trackId)
+            when (val decision = musicErrorPolicy.onFailure(
+                trackId = track?.trackId,
+                title = track?.title,
+                queueSize = controller?.mediaItemCount ?: 0,
+                cause = error.message
+            )) {
+                is MusicErrorPolicy.Decision.Retry -> {
+                    _error.value = decision.message
+                    retryJob?.cancel()
+                    retryJob = scope.launch {
+                        delay(1000L * decision.attempt)  // 线性退避 1s / 2s
+                        // 用户已切歌（next/previous）则本次重签作废：
+                        // 旧曲目的 refreshAndRetry 会 cancel 当前会话的 playAllJob，炸掉 phase2 补缺
+                        if (_currentTrack.value?.trackId != track?.trackId) return@launch
+                        track?.let { refreshAndRetry(it) }
                     }
                 }
-                return
-            }
-            retryCount++
-            _error.value = "加载失败，第 $retryCount/$maxRetry 次重试…"
-            retryJob?.cancel()
-            retryJob = scope.launch {
-                delay(1000L * retryCount)  // 线性退避 1s / 2s
-                // 用户已切歌（next/previous）则本次重签作废：
-                // 旧曲目的 refreshAndRetry 会 cancel 当前会话的 playAllJob，炸掉 phase2 补缺
-                if (_currentTrack.value?.trackId != track.trackId) return@launch
-                refreshAndRetry(track)
+                is MusicErrorPolicy.Decision.SkipNext -> {
+                    retryJob?.cancel()
+                    _error.value = decision.message
+                    next()
+                }
+                is MusicErrorPolicy.Decision.GiveUp -> {
+                    retryJob?.cancel()
+                    _error.value = decision.message
+                }
             }
         }
     }
@@ -462,8 +441,7 @@ class PlayerManager(
     /** 播放一首歌曲 */
     fun play(track: Track, addToQueue: Boolean = false) {
         // 用户主动播放视为新会话，重置重试状态与待恢复快照
-        retryCount = 0
-        consecutiveFailTrack = null
+        musicErrorPolicy.onSessionChanged()
         retryJob?.cancel()
         restoredSnapshot = null
         _currentStation.value = null   // 回到音乐会话语义
@@ -526,8 +504,7 @@ class PlayerManager(
      *  MediaController 尚未连接，controller 为 null,不透传会导致"快照已消费但什么都不播" */
     fun playAll(tracks: List<Track>, startIndex: Int = 0, playerOverride: Player? = null) {
         if (tracks.isEmpty() || startIndex !in tracks.indices) return
-        retryCount = 0
-        consecutiveFailTrack = null
+        musicErrorPolicy.onSessionChanged()
         retryJob?.cancel()
         restoredSnapshot = null
         _currentStation.value = null   // 回到音乐会话语义
@@ -637,7 +614,7 @@ class PlayerManager(
         if (c.isPlaying) c.pause() else c.play()
     }
 
-    private fun resumeRestored(snap: RestoredPlayback, playerOverride: Player? = null) {
+    private fun resumeRestored(snap: PlaybackSessionStore.Snapshot, playerOverride: Player? = null) {
         restoredSnapshot = null
         pendingRestorePositionMs = snap.positionMs
         pendingRestoreTrackId = snap.queue.getOrNull(snap.index)?.trackId
@@ -855,12 +832,7 @@ class PlayerManager(
         val q = _queue.value
         if (c.mediaItemCount == 0 || q.isEmpty()) return
         val index = c.currentMediaItemIndex.coerceIn(0, q.size - 1)
-        val entity = PlaybackStateEntity(
-            queueJson = PlaybackSessionCodec.encode(q),
-            currentIndex = index,
-            positionMs = c.currentPosition.coerceAtLeast(0L)
-        )
-        scope.launch { runCatching { database.playbackStateDao().upsert(entity) } }
+        scope.launch { sessionStore.save(q, index, c.currentPosition) }
     }
 
     /** 曲目播放成功即从清理挂账出账（成员检查前置，多数情况不产生 DataStore 写） */

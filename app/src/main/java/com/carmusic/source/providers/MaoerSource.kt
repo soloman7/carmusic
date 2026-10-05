@@ -38,7 +38,6 @@ class MaoerSource(private val client: OkHttpClient) : MusicSource {
                 "?s=${URLEncoder.encode(keyword, "UTF-8")}&p=$page&type=3&page_size=$limit"
 
             val json = client.getJson(url, headers)
-                ?: return@withContext emptyList()
             val datas = json.getAsJsonObject("info")?.getAsJsonArray("Datas")
                 ?: return@withContext emptyList()
 
@@ -67,7 +66,6 @@ class MaoerSource(private val client: OkHttpClient) : MusicSource {
         withContext(Dispatchers.IO) {
             val url = "https://www.missevan.com/sound/getsound?soundid=${track.id}"
             val json = client.getJson(url, headers)
-                ?: return@withContext null
             val soundUrl = json.getAsJsonObject("info")?.getAsJsonObject("sound")
                 ?.get("soundurl")?.asString
                 ?.takeIf { it.startsWith("http") } ?: return@withContext null

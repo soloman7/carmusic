@@ -196,6 +196,21 @@ class ContentCleanerTest {
     }
 
     @Test
+    fun `jamendo empty result is unreliable evidence and never blacklists`() = runBlocking {
+        // v3.9:Jamendo 服务端约 1/3 概率空返回(2026-09-16 实测),空列表 ≠ 平台确认无效
+        probe.recommended = listOf(playlist("jamendo", "j1"), playlist("netease", "n1"))
+        probe.playlistTracksMap["jamendo:j1"] = emptyList()
+        probe.playlistTracksMap["netease:n1"] = emptyList()
+
+        cleaner.runIfDue(force = true)
+
+        assertEquals(
+            "netease 空照常拉黑,jamendo 空不拉黑",
+            setOf("netease:n1"), settings.invalidPlaylists.first()
+        )
+    }
+
+    @Test
     fun `connectivity sentinel failure aborts run without touching anything`() = runBlocking {
         db.historyDao().insert(history("netease:keep"))
         db.favoriteDao().insert(favorite("netease:keepf"))

@@ -1,5 +1,7 @@
 # 车载音乐 CarMusic
 
+[![CI](https://github.com/soloman7/carmusic/actions/workflows/ci.yml/badge.svg)](https://github.com/soloman7/carmusic/actions/workflows/ci.yml)
+
 - **车载音乐 CarMusic**：为 BYD 元 PLUS 车机（DiLink / Android 10+）设计的聚合音乐播放 APK。当前版本 v3.6.0。
 
 ## 特性

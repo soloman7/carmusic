@@ -14,6 +14,7 @@ import com.carmusic.source.providers.MiguSource
 import com.carmusic.source.providers.NeteaseSource
 import com.carmusic.source.providers.QQSource
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
@@ -273,22 +274,32 @@ class SourceManager(okHttpClient: OkHttpClient, private val settingsRepository: 
      * 否则黑名单歌单永远探不到、隔周被"整体覆盖"放出来（振荡 bug）。
      */
     suspend fun getRecommendedPlaylists(includeInvalid: Boolean = false): List<Playlist> = coroutineScope {
-        val merged = sources.map { source ->
+        val results = sources.map { source ->
             async {
                 // runCatching 在缓存 block 之外：平台失败只影响自己本轮缺席，绝不缓存空分区
                 runCatching {
                     ApiCache.getOrPut("playlists:${source.platform}", ttlMs = 30 * 60_000) {
                         source.getRecommendedPlaylists()
                     }
-                }.onFailure { e ->
-                    if (e !is kotlinx.coroutines.CancellationException) {
-                        Log.w(TAG, "playlists failed for ${source.platform}: ${e.message}")
+                }.fold(
+                    { it to true },
+                    { e ->
+                        if (e !is kotlinx.coroutines.CancellationException) {
+                            Log.w(TAG, "playlists failed for ${source.platform}: ${e.message}")
+                        }
+                        emptyList<Playlist>() to false
                     }
-                }.getOrDefault(emptyList())
+                )
             }
-        }.flatMap { it.await() }
+        }.awaitAll()
+        // v3.9:全平台皆失败 = 网络问题,上抛让 UI 显示错误(v3.4"失败≠空"哲学补完);
+        // 部分成功仍按平台隔离语义返回分区
+        val ok = results.filter { it.second }.map { it.first }
+        if (ok.isEmpty()) {
+            throw SourceUnavailableException("recommended playlists: all ${sources.size} sources failed")
+        }
         val invalid = if (includeInvalid) emptySet() else settingsRepository.invalidPlaylists.first()
-        merged.filter { it.playlistId !in invalid }
+        ok.flatten().filter { it.playlistId !in invalid }
             .sortedBy { if (it.isTopList) 0 else 1 }
     }
 
@@ -321,18 +332,25 @@ class SourceManager(okHttpClient: OkHttpClient, private val settingsRepository: 
 
     /**
      * 歌单广场分页（单平台，5 分钟短缓存——分页内容时效性高于稳定性）
-     * offset=已加载条数，空列表表示没有更多。
+     * offset=已加载条数，空列表=平台确认没有更多页（分页终止信号）。
+     * v3.9:请求失败抛 [SourceUnavailableException]（UI 显示错误并可重试），
+     * 不再吞成空列表把"断网"伪装成"没有更多"。
      */
     suspend fun getPlaylistSquare(platform: String, offset: Int): List<Playlist> {
-        val source = sources.find { it.platform == platform } ?: return emptyList()
-        return runCatching {
+        val source = sources.find { it.platform == platform }
+            ?: throw SourceUnavailableException("square $platform: platform not enabled")
+        return try {
             ApiCache.getOrPut("square:$platform:$offset", ttlMs = 5 * 60_000) {
                 source.getPlaylistSquare(offset)
             }
-        }.getOrElse { e ->
-            if (e is kotlinx.coroutines.CancellationException) throw e
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: SourceUnavailableException) {
             Log.w(TAG, "square failed for $platform@$offset: ${e.message}")
-            emptyList()
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "square failed for $platform@$offset: ${e.message}")
+            throw SourceUnavailableException("square $platform@$offset: ${e.message}", e)
         }
     }
 

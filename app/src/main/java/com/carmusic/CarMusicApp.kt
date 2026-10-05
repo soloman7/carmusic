@@ -23,6 +23,14 @@ class CarMusicApp : Application(), ImageLoaderFactory {
             .okHttpClient(container.okHttpClient)
             .crossfade(true)
             .respectCacheHeaders(false)
+            // v3.9:显式限 64MB(默认 250MB)。车机存储有限,58k 电台 favicon 场景下
+            // 64MB 足够热区工作集,LRU 淘汰旧封面(死 favicon 不重验,靠淘汰出局)
+            .diskCache {
+                coil.disk.DiskCache.Builder()
+                    .directory(java.io.File(cacheDir, "image_cache"))
+                    .maxSizeBytes(64L * 1024 * 1024)
+                    .build()
+            }
             .build()
     }
 

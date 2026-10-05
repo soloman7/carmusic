@@ -17,6 +17,7 @@ import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import kotlinx.coroutines.delay
 
 /**
  * 应用自动更新（v3.2 新增）。
@@ -116,36 +117,28 @@ class UpdateManager(
         }
     }
 
-    /** 下载 APK 到 filesDir/updates，进度经 state 回报；SHA-256 校验通过转 Ready，失败转 Error */
+    /**
+     * 下载 APK 到 filesDir/updates，进度经 state 回报；SHA-256 校验通过转 Ready，失败转 Error。
+     * v3.9 断点续传:请求失败最多重试 [RESUME_ATTEMPTS] 次,半截包保留并带 Range 头续传
+     * （服务器不支持 Range 返回 200 则从头重下）;只有校验不匹配才删除文件。
+     */
     suspend fun downloadApk(info: RemoteVersion) = withContext(Dispatchers.IO) {
         _state.value = UpdateState.Downloading(0)
         runCatching {
             updateDir.mkdirs()
             val target = File(updateDir, "carmusic-v${info.versionName}.apk")
-            val request = Request.Builder().url(info.apkUrl).build()
-            okHttpClient.newCall(request).also { downloadCall = it }.execute().use { resp ->
-                if (!resp.isSuccessful) error("下载失败：HTTP ${resp.code}")
-                val body = resp.body ?: error("下载失败：空响应")
-                val total = body.contentLength()
-                body.byteStream().use { input ->
-                    target.outputStream().use { output ->
-                        val buf = ByteArray(64 * 1024)
-                        var read: Int
-                        var downloaded = 0L
-                        // 进度按整百分比回报，避免 StateFlow 被 64KB chunk 刷屏
-                        var lastPercent = -1
-                        while (input.read(buf).also { read = it } != -1) {
-                            output.write(buf, 0, read)
-                            downloaded += read
-                            if (total > 0) {
-                                val percent = (downloaded * 100 / total).toInt()
-                                if (percent != lastPercent) {
-                                    lastPercent = percent
-                                    _state.value = UpdateState.Downloading(percent)
-                                }
-                            }
-                        }
-                    }
+            var attempt = 0
+            while (true) {
+                try {
+                    downloadOnce(target, info)
+                    break
+                } catch (e: Exception) {
+                    val canceled = downloadCall?.isCanceled() == true ||
+                        e is kotlinx.coroutines.CancellationException
+                    if (canceled || attempt >= RESUME_ATTEMPTS - 1) throw e
+                    attempt++
+                    Log.w(TAG, "download attempt $attempt failed, will resume: ${e.message}")
+                    delay(2_000L * attempt)   // 退避后续传
                 }
             }
             verifyChecksum(target, info)
@@ -156,14 +149,49 @@ class UpdateManager(
             _state.value = UpdateState.Ready(info, file)
         }.onFailure { e ->
             Log.w(TAG, "download failed: ${e.message}")
-            // 半截包必须清掉：留着下次"待安装"点上去就是废纸，还占 filesDir
-            File(updateDir, "carmusic-v${info.versionName}.apk").delete()
+            // 半截包保留:用户重试时断点续传;SHA 不匹配的坏包已在 verifyChecksum 里删除
             _state.value = UpdateState.Error(e.message ?: "下载失败")
         }.also { downloadCall = null }
     }
 
-    /** version.json 带了 sha256 才校验；不匹配删除文件并报错（半截包/被篡改都不能进安装器） */
-    private fun verifyChecksum(apk: File, info: RemoteVersion) {
+    /** 单次下载尝试:已有半截包时带 Range 续传,服务器回 200(不支持 Range)则重置从头 */
+    private fun downloadOnce(target: File, info: RemoteVersion) {
+        val already = if (target.exists()) target.length() else 0L
+        val request = Request.Builder().url(info.apkUrl).apply {
+            if (already > 0) header("Range", "bytes=$already-")
+        }.build()
+        okHttpClient.newCall(request).also { downloadCall = it }.execute().use { resp ->
+            if (!resp.isSuccessful) error("下载失败：HTTP ${resp.code}")
+            val resume = resp.code == 206 && already > 0
+            if (!resume && already > 0) target.delete()   // 服务器不支持 Range,重置
+            val body = resp.body ?: error("下载失败：空响应")
+            val base = if (resume) already else 0L
+            val total = body.contentLength().takeIf { it > 0 }?.plus(base) ?: -1L
+            body.byteStream().use { input ->
+                java.io.FileOutputStream(target, resume).use { output ->
+                    val buf = ByteArray(64 * 1024)
+                    var read: Int
+                    var downloaded = 0L
+                    // 进度按整百分比回报，避免 StateFlow 被 64KB chunk 刷屏
+                    var lastPercent = -1
+                    while (input.read(buf).also { read = it } != -1) {
+                        output.write(buf, 0, read)
+                        downloaded += read
+                        if (total > 0) {
+                            val percent = ((base + downloaded) * 100 / total).toInt()
+                            if (percent != lastPercent) {
+                                lastPercent = percent
+                                _state.value = UpdateState.Downloading(percent)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** version.json 带了 sha256 才校验；不匹配删除文件并报错（半截包/被篡改都不能进安装器）。internal 供测试 */
+    internal fun verifyChecksum(apk: File, info: RemoteVersion) {
         if (info.sha256.isEmpty()) return
         val digest = java.security.MessageDigest.getInstance("SHA-256").digest(apk.readBytes())
         val actual = digest.joinToString("") { "%02x".format(it) }
@@ -201,5 +229,8 @@ class UpdateManager(
 
     companion object {
         private const val TAG = "UpdateManager"
+
+        /** 断点续传重试上限(车机弱网下 13MB 反复从零开始不可接受) */
+        private const val RESUME_ATTEMPTS = 3
     }
 }
