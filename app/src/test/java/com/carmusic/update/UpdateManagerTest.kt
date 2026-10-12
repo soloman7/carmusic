@@ -131,4 +131,31 @@ class UpdateManagerTest {
         manager.checkForUpdate(force = true)
         assertEquals("更新地址必须为 https", (manager.state.value as UpdateManager.UpdateState.Error).message)
     }
+
+    @Test
+    fun `missing sha256 is rejected before download`() {
+        val info = UpdateManager.RemoteVersion(
+            versionCode = 99, versionName = "9.9.9",
+            apkUrl = "https://example.com/app.apk", notes = "", sha256 = ""
+        )
+        val state = manager.validateRemote(info, currentVersionCode = 1)
+        assertTrue("缺 sha256 应 Error: $state", state is UpdateManager.UpdateState.Error)
+        assertTrue(
+            "错误信息应点名 sha256: ${(state as UpdateManager.UpdateState.Error).message}",
+            state.message!!.contains("sha256")
+        )
+    }
+
+    @Test
+    fun `empty sha256 verifyChecksum rejects and deletes apk`() = runBlocking {
+        apkFile().parentFile?.mkdirs()
+        apkFile().writeBytes(payload)
+        val info = UpdateManager.RemoteVersion(
+            versionCode = 99, versionName = "9.9.9",
+            apkUrl = server.url("/app.apk").toString(), notes = "", sha256 = ""
+        )
+        val err = runCatching { manager.verifyChecksum(apkFile(), info) }.exceptionOrNull()
+        assertTrue("空 sha 必须失败", err != null)
+        assertFalse("无校验值的包不得保留", apkFile().exists())
+    }
 }

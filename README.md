@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/soloman7/carmusic/actions/workflows/ci.yml/badge.svg)](https://github.com/soloman7/carmusic/actions/workflows/ci.yml)
 
-- **车载音乐 CarMusic**：为 BYD 元 PLUS 车机（DiLink / Android 10+）设计的聚合音乐播放 APK。当前版本 v3.6.0。
+- **车载音乐 CarMusic**：为 BYD 元 PLUS 车机（DiLink / Android 10+）设计的聚合音乐播放 APK。当前版本见 `app/build.gradle.kts` 的 `versionName`（唯一版本源），历史见 git tag。
 
 ## 特性
 
@@ -168,3 +168,11 @@ DiLink 系统对后台进程管理严格，**必须**将 CarMusic 加入白名�
 - **DiLink 兼容性**：不同 BYD 车型 DiLink 版本不同，可能存在差异
 - **网络要求**：多平台并发搜索需要稳定网络
 - **合规**：仅供个人学习使用，请支持正版音乐
+
+## 修复记录（本轮）
+
+- 猫耳FM 点播无声：播放流请求补站内 Referer + 浏览器 UA（`PlaybackHttpHeaders`），`buildMediaItem` 透传 `MediaSource.headers`；getsound 兼容 `soundurl` 多字段与 `//` 协议相对地址
+- 推荐歌单滑到底闪退：歌单/曲目 `distinctBy` 去重 + Lazy key 加 index 兜底；网格封面 Coil 降采样防车机 OOM
+- 应用内更新：`version.json` 缺 `sha256` 直接拒绝（完整性红线）
+- 崩溃日志导出：SMTP/JavaMail 移除，改为系统分享
+- 版本唯一源：`app/build.gradle.kts`（README/AGENTS 不再写死版本号）

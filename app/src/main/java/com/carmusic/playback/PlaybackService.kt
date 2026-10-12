@@ -65,7 +65,9 @@ class PlaybackService : MediaLibraryService() {
                     .setDataSourceFactory(
                         androidx.media3.datasource.okhttp.OkHttpDataSource.Factory(
                             CarMusicApp.instance.container.okHttpClient
-                        ).setUserAgent(com.carmusic.BuildConfig.UA)
+                        )
+                            // 浏览器 UA：多数 CDN 拒绝 carmusic/x.y.z（咪咕 freetyst、猫耳 WAF）
+                            .setUserAgent(com.carmusic.source.providers.CHROME_UA)
                     )
             )
             .setAudioAttributes(audioAttributes, /* handleAudioFocus = */ true)

@@ -299,7 +299,9 @@ class SourceManager(okHttpClient: OkHttpClient, private val settingsRepository: 
             throw SourceUnavailableException("recommended playlists: all ${sources.size} sources failed")
         }
         val invalid = if (includeInvalid) emptySet() else settingsRepository.invalidPlaylists.first()
+        // distinctBy playlistId：LazyGrid key 必须唯一，平台返回重复单会直接闪退
         ok.flatten().filter { it.playlistId !in invalid }
+            .distinctBy { it.playlistId }
             .sortedBy { if (it.isTopList) 0 else 1 }
     }
 
@@ -328,6 +330,7 @@ class SourceManager(okHttpClient: OkHttpClient, private val settingsRepository: 
             Log.w(TAG, "playlist tracks failed for ${playlist.playlistId}: ${e.message}")
             throw SourceUnavailableException("playlist tracks ${playlist.playlistId}: ${e.message}", e)
         }.filter { it.extra["grey"] != "1" }
+            .distinctBy { it.trackId }   // 同曲重复行会让 LazyColumn key 冲突闪退
     }
 
     /**

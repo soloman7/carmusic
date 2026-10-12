@@ -3,7 +3,6 @@ package com.carmusic.di
 import android.content.Context
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
-import com.carmusic.crash.CrashHandler
 import com.carmusic.data.AppDatabase
 import com.carmusic.data.CacheRepository
 import com.carmusic.data.SettingsRepository
@@ -26,7 +25,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import okhttp3.Cache
 import okhttp3.OkHttpClient
@@ -43,6 +41,8 @@ class AppContainer(context: Context) {
         .writeTimeout(20, TimeUnit.SECONDS)
         .cache(Cache(File(appContext.cacheDir, "http"), 50L * 1024 * 1024))
         .retryOnConnectionFailure(true)
+        // 播放流/CDN 补 Referer 与浏览器 UA（猫耳 WAF 等）；API 调用自带的头不被覆盖
+        .addInterceptor(com.carmusic.playback.PlaybackHttpHeaders.interceptor)
         .build()
 
     val database: AppDatabase = AppDatabase.build(appContext)
@@ -76,14 +76,10 @@ class AppContainer(context: Context) {
         }
     )
 
-    // 容器级协程：跟随设置变化把 SMTP host/port 注入 CrashHandler（崩溃日志导出用）
+    // 容器级协程：显式后台任务（更新检查/每周清理/电台语料）
     private val containerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     init {
-        containerScope.launch {
-            combine(settingsRepository.smtpHost, settingsRepository.smtpPort) { h, p -> h to p }
-                .collect { (host, port) -> CrashHandler.configureSmtp(host, port) }
-        }
         // v3.2：启动后静默检查更新（未配置更新地址则内部直接跳过）与每周清理，
         // 延迟触发避开启动高峰，失败均静默不打扰驾驶场景
         containerScope.launch {

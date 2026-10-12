@@ -44,7 +44,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -86,11 +85,6 @@ class SettingsViewModel(
     val quality = repo.preferredQuality.stateIn(viewModelScope, SharingStarted.Eagerly, "320k")
     val enabledPlatforms = repo.enabledPlatforms.stateIn(viewModelScope, SharingStarted.Eagerly, SettingsRepository.ALL_PLATFORMS)
     val autoPlayNext = repo.autoPlayNext.stateIn(viewModelScope, SharingStarted.Eagerly, true)
-    val smtpHost = repo.smtpHost.stateIn(viewModelScope, SharingStarted.Eagerly, "smtp.163.com")
-    val smtpPort = repo.smtpPort.stateIn(viewModelScope, SharingStarted.Eagerly, 465)
-    val smtpUser = repo.smtpUser.stateIn(viewModelScope, SharingStarted.Eagerly, "")
-    val smtpPass = repo.smtpPass.stateIn(viewModelScope, SharingStarted.Eagerly, "")
-    val emailTo = repo.emailTo.stateIn(viewModelScope, SharingStarted.Eagerly, "")
     val jamendoClientId = repo.jamendoClientId.stateIn(viewModelScope, SharingStarted.Eagerly, "")
 
     // v3.2：自动更新 + 每周清理
@@ -110,8 +104,6 @@ class SettingsViewModel(
     private val _exportStatus = MutableStateFlow<String?>(null)
     val exportStatus: StateFlow<String?> = _exportStatus.asStateFlow()
 
-    private var lastExportAt = 0L
-
     init {
         refreshStats()
     }
@@ -127,9 +119,6 @@ class SettingsViewModel(
     fun setQuality(q: String) = viewModelScope.launch { repo.setPreferredQuality(q) }
     fun togglePlatform(p: String) = viewModelScope.launch { repo.togglePlatform(p) }
     fun setAutoPlay(b: Boolean) = viewModelScope.launch { repo.setAutoPlayNext(b) }
-    fun setSmtp(user: String, pass: String, to: String) = viewModelScope.launch { repo.setSmtp(user, pass, to) }
-    fun setSmtpHost(host: String) = viewModelScope.launch { repo.setSmtpHost(host) }
-    fun setSmtpPort(port: Int) = viewModelScope.launch { repo.setSmtpPort(port) }
     fun setJamendoClientId(id: String) = viewModelScope.launch { repo.setJamendoClientId(id) }
 
     // v3.2：更新与清理
@@ -149,23 +138,23 @@ class SettingsViewModel(
         refreshStats()
     }
 
-    fun exportCrashLogs() {
-        val now = System.currentTimeMillis()
-        if (now - lastExportAt < 60_000) {
-            _exportStatus.value = "操作太频繁，请 60s 后再试"
-            return
+    /**
+     * 导出崩溃日志：系统分享（原先走 SMTP 发邮件，依赖重且要授权码，已移除）。
+     * 返回供 UI 拉起的 ACTION_SEND Intent；无日志时返回 null。
+     */
+    fun buildCrashShareIntent(): android.content.Intent? {
+        val files = CrashHandler.listCrashes(appContext)
+        if (files.isEmpty()) {
+            _exportStatus.value = "暂无崩溃日志"
+            return null
         }
-        val user = smtpUser.value
-        val pass = smtpPass.value
-        val to = emailTo.value
-        if (user.isBlank() || pass.isBlank() || to.isBlank()) {
-            _exportStatus.value = "请先填写 SMTP 用户名 / 授权码 / 收件邮箱"
-            return
+        val text = files.joinToString("\n\n==========\n\n") { f ->
+            "== ${f.name} ==\n${f.readText()}"
         }
-        lastExportAt = now
-        _exportStatus.value = "正在发送…"
-        CrashHandler.exportViaEmail(appContext, user, pass, to) { ok, msg ->
-            _exportStatus.value = msg
+        return android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(android.content.Intent.EXTRA_SUBJECT, "CarMusic 崩溃日志 (${files.size})")
+            putExtra(android.content.Intent.EXTRA_TEXT, text)
         }
     }
 }
@@ -178,11 +167,6 @@ fun SettingsScreen(
     val quality by vm.quality.collectAsState()
     val enabled by vm.enabledPlatforms.collectAsState()
     val autoPlay by vm.autoPlayNext.collectAsState()
-    val smtpHost by vm.smtpHost.collectAsState()
-    val smtpPort by vm.smtpPort.collectAsState()
-    val smtpUser by vm.smtpUser.collectAsState()
-    val smtpPass by vm.smtpPass.collectAsState()
-    val emailTo by vm.emailTo.collectAsState()
     val cacheSize by vm.cacheSizeMB.collectAsState()
     val crashCount by vm.crashCount.collectAsState()
     val exportStatus by vm.exportStatus.collectAsState()
@@ -196,13 +180,12 @@ fun SettingsScreen(
 
     // DataStore 首帧异步到达，不能用 remember(upstream) 重建输入框，
     // 否则会把用户正在输入的内容清掉；改为首次非空值到达时只填充一次
-    val smtpHostInput = rememberSyncedInput(smtpHost)
-    val smtpPortInput = rememberSyncedInput(smtpPort.toString())
-    val smtpUserInput = rememberSyncedInput(smtpUser)
-    val smtpPassInput = rememberSyncedInput(smtpPass)
-    val emailToInput = rememberSyncedInput(emailTo)
     val jamendoIdInput = rememberSyncedInput(jamendoClientId)
     val updateUrlInput = rememberSyncedInput(updateUrl)
+
+    val shareLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
+    ) { }
 
     var showClearCacheConfirm by remember { mutableStateOf(false) }
 
@@ -321,67 +304,22 @@ fun SettingsScreen(
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        // 崩溃日志
+        // 崩溃日志（系统分享导出；SMTP 邮件链路已移除）
         SectionTitle("崩溃日志（$crashCount 条）")
-        OutlinedTextField(
-            value = smtpHostInput.value,
-            onValueChange = { smtpHostInput.value = it },
-            label = { Text("SMTP 服务器", color = CarTextTertiary) },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            colors = darkFieldColors()
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        OutlinedTextField(
-            value = smtpPortInput.value,
-            onValueChange = { smtpPortInput.value = it },
-            label = { Text("SMTP 端口（SSL，默认 465）", color = CarTextTertiary) },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            colors = darkFieldColors()
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        OutlinedTextField(
-            value = smtpUserInput.value,
-            onValueChange = { smtpUserInput.value = it },
-            label = { Text("邮箱账号", color = CarTextTertiary) },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            colors = darkFieldColors()
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        OutlinedTextField(
-            value = smtpPassInput.value,
-            onValueChange = { smtpPassInput.value = it },
-            label = { Text("SMTP 授权码", color = CarTextTertiary) },
-            visualTransformation = PasswordVisualTransformation(),
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            colors = darkFieldColors()
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        OutlinedTextField(
-            value = emailToInput.value,
-            onValueChange = { emailToInput.value = it },
-            label = { Text("收件邮箱", color = CarTextTertiary) },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            colors = darkFieldColors()
+        Text(
+            "将全部崩溃日志通过系统分享发出（邮件/网盘/蓝牙均可），无需配置邮箱授权码。",
+            color = CarTextTertiary,
+            style = MaterialTheme.typography.bodyMedium
         )
         Spacer(modifier = Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(
                 onClick = {
-                    vm.setSmtp(smtpUserInput.value, smtpPassInput.value, emailToInput.value)
-                    vm.setSmtpHost(smtpHostInput.value)
-                    smtpPortInput.value.toIntOrNull()?.let { vm.setSmtpPort(it) }
+                    val intent = vm.buildCrashShareIntent() ?: return@Button
+                    shareLauncher.launch(android.content.Intent.createChooser(intent, "分享崩溃日志"))
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = CarSurfaceVariant)
-            ) { Text("保存邮箱配置", color = Color.White) }
-            Button(
-                onClick = { vm.exportCrashLogs() },
                 colors = ButtonDefaults.buttonColors(containerColor = CarPrimary)
-            ) { Text("导出崩溃日志", color = Color.Black) }
+            ) { Text("分享崩溃日志", color = Color.Black) }
         }
         exportStatus?.let {
             Spacer(modifier = Modifier.height(8.dp))

@@ -61,15 +61,36 @@ class MaoerSource(private val client: OkHttpClient) : MusicSource {
             }
         }
 
-    /** getsound 返回 HLS m3u8 地址（media3-exoplayer-hls 已在依赖里，自动识别） */
+    /**
+     * getsound 返回 HLS m3u8 地址（media3-exoplayer-hls 已在依赖里，自动识别）。
+     * 播放侧必须带上站内 Referer + 浏览器 UA（阿里云 WAF）：见 MediaSource.headers
+     * 与 PlaybackHttpHeaders。此前 headers 被 buildMediaItem 丢弃 → 有 URL 无声。
+     */
     override suspend fun getMediaSource(track: Track, quality: String): MediaSource? =
         withContext(Dispatchers.IO) {
             val url = "https://www.missevan.com/sound/getsound?soundid=${track.id}"
             val json = client.getJson(url, headers)
-            val soundUrl = json.getAsJsonObject("info")?.getAsJsonObject("sound")
-                ?.get("soundurl")?.asString
-                ?.takeIf { it.startsWith("http") } ?: return@withContext null
-            MediaSource(url = soundUrl, expireAt = 0, quality = quality)
+            val sound = json.getAsJsonObject("info")?.getAsJsonObject("sound")
+                ?: return@withContext null
+            // 字段名在客户端版本间漂移；协议相对地址补 https（CDN 常给 //xxx）
+            val raw = listOf("soundurl", "soundurl_128", "soundurl_64", "sound_url", "url")
+                .mapNotNull { key -> sound.get(key)?.takeIf { !it.isJsonNull }?.asString }
+                .firstOrNull { it.isNotBlank() }
+                ?: return@withContext null
+            val soundUrl = when {
+                raw.startsWith("http://") || raw.startsWith("https://") -> raw
+                raw.startsWith("//") -> "https:$raw"
+                else -> return@withContext null
+            }
+            MediaSource(
+                url = soundUrl,
+                expireAt = 0,
+                quality = quality,
+                headers = mapOf(
+                    "Referer" to "https://www.missevan.com/",
+                    "User-Agent" to CHROME_UA
+                )
+            )
         }
 
     override suspend fun getLyric(track: Track): LyricResult? = null

@@ -21,11 +21,6 @@ class SettingsRepository(private val context: Context) {
         private val KEY_PLATFORMS = stringSetPreferencesKey("platforms")
         private val KEY_AUTO_PLAY = booleanPreferencesKey("auto_play_next")
         private val KEY_PLAY_MODE = stringPreferencesKey("play_mode")
-        private val KEY_SMTP_HOST = stringPreferencesKey("smtp_host")
-        private val KEY_SMTP_PORT = intPreferencesKey("smtp_port")
-        private val KEY_SMTP_USER = stringPreferencesKey("smtp_user")
-        private val KEY_SMTP_PASS = stringPreferencesKey("smtp_pass")
-        private val KEY_EMAIL_TO = stringPreferencesKey("email_to")
         private val KEY_JAMENDO_CLIENT_ID = stringPreferencesKey("jamendo_client_id")
         private val KEY_EQ_ENABLED = booleanPreferencesKey("eq_enabled")
         private val KEY_EQ_PRESET = stringPreferencesKey("eq_preset")
@@ -84,34 +79,6 @@ class SettingsRepository(private val context: Context) {
         .map { it[KEY_PLAY_MODE] ?: "REPEAT_ALL" }
 
     suspend fun setPlayMode(mode: String) = context.settingsDataStore.edit { it[KEY_PLAY_MODE] = mode }
-
-    // ---- SMTP / 崩溃日志邮箱 ----
-    val smtpHost: Flow<String> = context.settingsDataStore.data.map { it[KEY_SMTP_HOST] ?: "smtp.163.com" }
-    val smtpPort: Flow<Int> = context.settingsDataStore.data.map { it[KEY_SMTP_PORT] ?: 465 }
-    val smtpUser: Flow<String> = context.settingsDataStore.data.map { it[KEY_SMTP_USER] ?: "" }
-
-    /**
-     * 授权码在 DataStore 中存密文（见 SmtpCrypto）。
-     * 解密失败说明是历史遗留的明文数据，按原文返回兼容；下次保存时会升级为密文。
-     */
-    val smtpPass: Flow<String> = context.settingsDataStore.data.map { pref ->
-        val stored = pref[KEY_SMTP_PASS] ?: ""
-        if (stored.isEmpty()) "" else runCatching { SmtpCrypto.decrypt(stored) }.getOrDefault(stored)
-    }
-    val emailTo: Flow<String> = context.settingsDataStore.data.map { it[KEY_EMAIL_TO] ?: "" }
-
-    suspend fun setSmtpHost(host: String) = context.settingsDataStore.edit {
-        it[KEY_SMTP_HOST] = host.trim().ifEmpty { "smtp.163.com" }
-    }
-
-    suspend fun setSmtpPort(port: Int) = context.settingsDataStore.edit { it[KEY_SMTP_PORT] = port }
-
-    suspend fun setSmtp(user: String, pass: String, to: String) = context.settingsDataStore.edit {
-        it[KEY_SMTP_USER] = user
-        // 明文授权码加密后落盘；加密失败（极端情况，如 Keystore 不可用）按原文存储，保证功能可用
-        it[KEY_SMTP_PASS] = if (pass.isEmpty()) "" else runCatching { SmtpCrypto.encrypt(pass) }.getOrDefault(pass)
-        it[KEY_EMAIL_TO] = to
-    }
 
     // ---- Jamendo client_id（免费电台源；默认已内置用户注册的 id，设置页可改）----
     val jamendoClientId: Flow<String> = context.settingsDataStore.data.map { it[KEY_JAMENDO_CLIENT_ID] ?: "8a49589e" }

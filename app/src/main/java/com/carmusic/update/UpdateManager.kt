@@ -110,7 +110,22 @@ class UpdateManager(
             _state.value = UpdateState.Error("APK 下载地址必须为 https")
             return
         }
-        _state.value = if (info.versionCode > BuildConfig.VERSION_CODE) {
+        _state.value = validateRemote(info, BuildConfig.VERSION_CODE)
+    }
+
+    /**
+     * 远端版本信息合规判定（https + 必填 sha256 + 版本比较）。
+     * internal 供单测直接覆盖，不必伪造 https MockWebServer。
+     */
+    internal fun validateRemote(info: RemoteVersion, currentVersionCode: Int): UpdateState {
+        if (!info.apkUrl.startsWith("https://")) {
+            return UpdateState.Error("APK 下载地址必须为 https")
+        }
+        // 更新通道是唯一软件来源：缺 sha256 视为配置错误，禁止进入下载/安装
+        if (info.sha256.isEmpty()) {
+            return UpdateState.Error("更新信息缺少 sha256，已拒绝（请检查 version.json）")
+        }
+        return if (info.versionCode > currentVersionCode) {
             UpdateState.Available(info)
         } else {
             UpdateState.UpToDate
@@ -190,9 +205,12 @@ class UpdateManager(
         }
     }
 
-    /** version.json 带了 sha256 才校验；不匹配删除文件并报错（半截包/被篡改都不能进安装器）。internal 供测试 */
+    /** sha256 必填（checkForUpdate 已拦缺省）；不匹配删除文件并报错。internal 供测试 */
     internal fun verifyChecksum(apk: File, info: RemoteVersion) {
-        if (info.sha256.isEmpty()) return
+        if (info.sha256.isEmpty()) {
+            apk.delete()
+            error("APK 缺少 sha256 校验值，已取消安装")
+        }
         val digest = java.security.MessageDigest.getInstance("SHA-256").digest(apk.readBytes())
         val actual = digest.joinToString("") { "%02x".format(it) }
         if (!actual.equals(info.sha256, ignoreCase = true)) {

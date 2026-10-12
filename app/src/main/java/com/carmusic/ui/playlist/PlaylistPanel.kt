@@ -27,7 +27,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -206,7 +206,9 @@ private fun GridLevel(vm: PlaylistViewModel) {
                 verticalArrangement = Arrangement.spacedBy(16.dp),
                 contentPadding = PaddingValues(bottom = 16.dp)
             ) {
-                items(displayList, key = { it.playlistId }) { playlist ->
+                // key 必须全列表唯一：SourceManager 已 distinctBy，这里再用 index 兜底，
+                // 避免任何上游重复 key 在滑到底 compose 时抛 IllegalArgumentException 闪退
+                itemsIndexed(displayList, key = { index, p -> "${index}_${p.playlistId}" }) { _, playlist ->
                     PlaylistCell(
                         playlist = playlist,
                         starting = startingId == playlist.playlistId,
@@ -265,8 +267,14 @@ private fun PlaylistCell(
         // 封面 + 右下角悬浮一键播放钮（内层点击优先，不触发进入曲目层）
         Box {
             if (playlist.coverUrl != null) {
+                // 降采样：车机内存小，网格滚到底几十张原图 cover 极易 OOM 闪退
+                val ctx = androidx.compose.ui.platform.LocalContext.current
                 AsyncImage(
-                    model = playlist.coverUrl,
+                    model = coil.request.ImageRequest.Builder(ctx)
+                        .data(playlist.coverUrl)
+                        .size(360, 360)
+                        .crossfade(false)
+                        .build(),
                     contentDescription = playlist.name,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -424,7 +432,7 @@ private fun TrackLevel(vm: PlaylistViewModel, playlist: Playlist) {
                 verticalArrangement = Arrangement.spacedBy(4.dp),
                 contentPadding = PaddingValues(bottom = 16.dp)
             ) {
-                itemsIndexed(tracks, key = { _, t -> t.trackId }) { index, track ->
+                itemsIndexed(tracks, key = { index, t -> "${index}_${t.trackId}" }) { index, track ->
                     TrackRow(
                         index = index,
                         track = track,

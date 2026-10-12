@@ -22,8 +22,8 @@ android {
         applicationId = "com.carmusic"
         minSdk = 26
         targetSdk = 35
-        versionCode = 33
-        versionName = "3.9.0"
+        versionCode = 34
+        versionName = "3.9.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -165,10 +165,6 @@ dependencies {
 
     // Splash screen
     implementation(libs.core.splashscreen)
-
-    // JavaMail for crash log export via 163 SMTP
-    implementation(libs.android.mail)
-    implementation(libs.android.activation)
 
     // JVM unit tests
     testImplementation(libs.junit)

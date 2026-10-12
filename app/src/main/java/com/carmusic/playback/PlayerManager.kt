@@ -761,6 +761,10 @@ class PlayerManager(
     // internal:PlayerTransitionFenceTest 需要与生产同路径构建音乐 mediaId
     internal fun buildMediaItem(t: Track, source: MediaSource): MediaItem {
         trackRegistry[t.trackId] = t
+        // 取流时才知道的 Referer/UA 登记给播放数据源（猫耳 WAF 无声根因）
+        if (source.headers.isNotEmpty()) {
+            PlaybackHttpHeaders.register(source.url, source.headers)
+        }
         return MediaItem.Builder()
             .setUri(source.url)
             .setMediaId(t.trackId)

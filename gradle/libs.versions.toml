@@ -17,7 +17,6 @@ bcprov = "1.78.1"
 datastore = "1.1.1"
 core-ktx = "1.15.0"
 splashscreen = "1.0.1"
-javamail = "1.6.7"
 junit = "4.13.2"
 robolectric = "4.13"
 mockito-kotlin = "5.4.0"
@@ -82,10 +81,6 @@ core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "core-ktx
 
 # Splash screen
 core-splashscreen = { group = "androidx.core", name = "core-splashscreen", version.ref = "splashscreen" }
-
-# JavaMail for crash log export via 163 SMTP
-android-mail = { group = "com.sun.mail", name = "android-mail", version.ref = "javamail" }
-android-activation = { group = "com.sun.mail", name = "android-activation", version.ref = "javamail" }
 
 # JVM unit tests
 junit = { group = "junit", name = "junit", version.ref = "junit" }
