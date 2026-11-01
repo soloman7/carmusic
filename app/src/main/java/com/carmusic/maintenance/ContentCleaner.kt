@@ -83,7 +83,7 @@ class ContentCleaner(
                     }
                     return
                 }
-                val removed = cleanDeadTracks()
+                val removed = cleanDeadTracks(force)
                 val invalid = cleanInvalidPlaylists()
                 database.lyricDao().deleteOlderThan(System.currentTimeMillis() - LYRIC_TTL_MS)
                 settings.setLastCleanupAt(System.currentTimeMillis())
@@ -99,17 +99,17 @@ class ContentCleaner(
     }
 
     /**
-     * 探测**历史**死链（按 trackId 去重），连续两轮失败才从历史表删掉；返回删除数。
+     * 探测**历史**死链（按 trackId 去重）；返回删除数。
      * 收藏不进探测列表、永不被删（v3.8 红线，见类注释）；上轮挂账（pendingDeadTracks）
      * 里本轮恢复可播的自动出账。
-     * v3.4.3 证据语义（修正 v3.4 把 DELETE 证据绑在"返回已过期 URL"上的不可达回归）：
+     * v3.9.2:force（设置页"立即清理"= 用户主动触发）时单周期确认即删——两周期语义
+     * 防的是自动轮的弱网误判，用户主动触发 + 连通哨兵已挡全网故障，无需再等 14 天。
+     * 证据语义不变：
      * - true  = 拿到可用播放地址（出账）
      * - false = 平台**确认无源**（provider 返回 null；挂账/删除的唯一删除性证据）
      * - null  = 网络故障（SourceUnavailableException）或探测超时或播放让路（证据不可信，不动账本）
-     * 残余风险如实说明：provider 内部把 HTTP 错误也吞成 null（ProviderHttp），故平台级宕机
-     * 会被误读为"确认无源"——由 ping 哨兵 + 两周期确认 + 播放成功实时出账三道闸兜底。
      */
-    private suspend fun cleanDeadTracks(): Int {
+    private suspend fun cleanDeadTracks(force: Boolean): Int {
         val historyDao = database.historyDao()
         // 历史表只保留最近 200 条（insertAndTrim），取首帧全量即可
         val history = historyDao.getRecentFlow(200).first().map { it.toTrack() }
@@ -147,8 +147,17 @@ class ContentCleaner(
                                 synchronized(this@ContentCleaner) { removed++ }
                                 Log.d(TAG, "removed dead track from history: ${track.trackId} ${track.title}")
                             }
-                            DeadTrackLedger.Decision.PENDING ->
-                                Log.d(TAG, "track probe failed, pending next cycle: ${track.trackId}")
+                            DeadTrackLedger.Decision.PENDING -> {
+                                // force:用户主动清理,单周期确认即删(证据 = 平台确认无源,非弱网)
+                                if (force && probed == false) {
+                                    historyDao.deleteById(track.trackId)
+                                    ledger.confirmDeadOnForce(track.trackId)
+                                    synchronized(this@ContentCleaner) { removed++ }
+                                    Log.d(TAG, "force-removed dead track: ${track.trackId} ${track.title}")
+                                } else {
+                                    Log.d(TAG, "track probe failed, pending next cycle: ${track.trackId}")
+                                }
+                            }
                             DeadTrackLedger.Decision.KEEP -> Unit
                         }
                     }

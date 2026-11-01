@@ -127,14 +127,16 @@ class ContentCleanerTest {
     fun `history dead track deleted only after two confirmed cycles`() = runBlocking {
         db.historyDao().insert(history("netease:h1"))
         probe.defaultProbe = false
+        settings.setLastCleanupAt(0)   // DataStore 跨测试共享,前序用例的时间戳会触发 7 天门禁
 
-        cleaner.runIfDue(force = true)
+        cleaner.runIfDue()
         assertEquals("首轮失败只挂账", 1, db.historyDao().getRecentFlow(200).first().size)
         assertEquals(setOf("netease:h1"), settings.pendingDeadTracks.first())
 
-        cleaner.runIfDue(force = true)
+        settings.setLastCleanupAt(0)   // 次轮归零门禁(首轮写入的时间戳)
+        cleaner.runIfDue()
         val done = cleaner.state.value
-        assertTrue("次轮应完成清理", done is ContentCleaner.CleanState.Done)
+        assertTrue("次轮应完成清理 state=" + cleaner.state.value, done is ContentCleaner.CleanState.Done)
         assertEquals("次轮确认死 → 从历史删除", 1, (done as ContentCleaner.CleanState.Done).removedTracks)
         assertEquals(0, db.historyDao().getRecentFlow(200).first().size)
         assertEquals("删除后出账", emptySet<String>(), settings.pendingDeadTracks.first())
@@ -157,11 +159,13 @@ class ContentCleanerTest {
     fun `history track recovered on second cycle survives and clears pending`() = runBlocking {
         db.historyDao().insert(history("netease:rec"))
         probe.defaultProbe = false
-        cleaner.runIfDue(force = true)
+        settings.setLastCleanupAt(0)
+        cleaner.runIfDue()
         assertEquals(setOf("netease:rec"), settings.pendingDeadTracks.first())
 
         probe.defaultProbe = true   // 期间恢复可播
-        cleaner.runIfDue(force = true)
+        settings.setLastCleanupAt(0)
+        cleaner.runIfDue()
         assertEquals("恢复可播 → 出账不删", 1, db.historyDao().getRecentFlow(200).first().size)
         assertEquals(emptySet<String>(), settings.pendingDeadTracks.first())
     }
@@ -172,8 +176,9 @@ class ContentCleanerTest {
         db.historyDao().insert(history("netease:net2"))
         probe.probeErrors["netease:net1"] = SourceUnavailableException("timeout")
         probe.probeResults["netease:net2"] = false
+        settings.setLastCleanupAt(0)
 
-        cleaner.runIfDue(force = true)
+        cleaner.runIfDue()
 
         assertEquals("网络故障不挂账", setOf("netease:net2"), settings.pendingDeadTracks.first())
         assertEquals("证据不可信不删数据", 2, db.historyDao().getRecentFlow(200).first().size)
@@ -233,9 +238,47 @@ class ContentCleanerTest {
         db.favoriteDao().insert(favorite("netease:stale"))
         db.historyDao().insert(history("netease:fresh"))
         probe.probeResults["netease:fresh"] = false
+        settings.setLastCleanupAt(0)
+
+        cleaner.runIfDue()
+
+        assertEquals("旧收藏挂账修剪,新历史挂账保留", setOf("netease:fresh"), settings.pendingDeadTracks.first())
+    }
+
+    @Test
+    fun `force cleanup deletes confirmed dead in single cycle`() = runBlocking {
+        // v3.9.2:用户主动"立即清理"= 单周期确认即删(平台确认无源,哨兵已挡弱网)
+        db.historyDao().insert(history("netease:dead"))
+        db.historyDao().insert(history("netease:alive"))
+        probe.probeResults["netease:dead"] = false
+        probe.probeResults["netease:alive"] = true
 
         cleaner.runIfDue(force = true)
 
-        assertEquals("旧收藏挂账修剪,新历史挂账保留", setOf("netease:fresh"), settings.pendingDeadTracks.first())
+        assertEquals("确认无源的历史死链立即删除(dead 删,alive 留)", 1, db.historyDao().getRecentFlow(200).first().size)
+        assertTrue(db.historyDao().getRecentFlow(200).first().any { it.trackId == "netease:alive" })
+    }
+
+    @Test
+    fun `force cleanup still spares inconclusive evidence`() = runBlocking {
+        // force 也不得基于"网络故障/超时"删数据——只对 false(平台确认无源)生效
+        db.historyDao().insert(history("netease:netfail"))
+        probe.probeErrors["netease:netfail"] = SourceUnavailableException("timeout")
+
+        cleaner.runIfDue(force = true)
+
+        assertEquals("证据不可信时 force 也不删", 1, db.historyDao().getRecentFlow(200).first().size)
+        assertEquals("网络故障不挂账", emptySet<String>(), settings.pendingDeadTracks.first())
+    }
+
+    @Test
+    fun `force cleanup never touches favorites even when platform confirms dead`() = runBlocking {
+        db.favoriteDao().insert(favorite("netease:fdead"))
+        probe.probeResults["netease:fdead"] = false
+
+        cleaner.runIfDue(force = true)
+
+        assertEquals("收藏红线在 force 下依然成立", 1, db.favoriteDao().getAll().size)
+        assertTrue(probe.probedTracks.none { it == "netease:fdead" })
     }
 }

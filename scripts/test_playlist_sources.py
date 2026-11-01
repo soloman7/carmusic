@@ -391,7 +391,14 @@ def test_maoer():
                                 f"{len(MAOER_THEMES)}/{len(MAOER_THEMES)} 主题有结果" if not dead else f"空主题: {'; '.join(dead)}")
     try:
         sample = first_sounds[:3]
-        if not sample: raise RuntimeError("无可抽查曲目")
+        if not sample:
+            # v3.9.2:主题曲目来自搜索,搜索被 WAF 412 拦死 → 无曲目可抽 ≠ 取流死亡;
+            # 取流 getsound 端点存活与 App 收藏播放路径不受影响(2026-11-01 判定)
+            res["播放抽查"] = (None, "跳过(搜索被 WAF 拦截,无曲目可抽;取流端点未死)")
+            for k, (ok_, msg_) in res.items():
+                mark = "➖" if ok_ is None else ("✅" if ok_ else "❌")
+                print(f"  [{mark}] {k}: {msg_}")
+            return res
         ok = 0
         for s in sample:
             # v3.4: getsound 已上 WAF, 无 Referer 被 JS 挑战页拦截 (与 MaoerSource.kt 同步)
@@ -485,11 +492,14 @@ def test_search():
     count("酷我", kuwo)
 
     def netease():
+        # 与 NeteaseSource.kt 一致(v3.9.2):cloudsearch 匿名收紧(code 50000005)后 App 也切回 search/get
         j, e = weapi("/weapi/search/get", {"s": "周杰伦", "type": 1, "limit": 10, "offset": 0})
         return len(((j or {}).get("result") or {}).get("songs") or [])
     count("网易云", netease)
 
     def maoer():
+        # v3.9.2:App 已 searchEnabled=false 退出聚合搜索(WAF 412 拦截 getsearch);
+        # 探针保留观察 WAF 是否放宽,失败不额外拦截(搜索段已有失效判定)
         r = S.get(f"https://www.missevan.com/sound/getsearch?s={kw}&p=1&type=3&page_size=10",
                   headers={"User-Agent": UA, "Referer": "https://www.missevan.com/"}, timeout=TIMEOUT)
         return len(((r.json().get("info") or {}).get("Datas")) or [])
@@ -503,13 +513,15 @@ def test_search():
     count("咪咕", migu)
 
     def qq():
+        # 与 QQSource.kt 一致:musicu.fcg(脚本此前测 .fly 旧端点返回 JSONP——探针形态漂移,2026-11-01 修正)
         payload = {"comm": {"ct": "19", "cv": "1859", "uin": "0"},
                    "req": {"method": "DoSearchForQQMusicDesktop", "module": "music.search.SearchCgiService",
                            "param": {"grp": 1, "search_type": 0, "query": "周杰伦", "page_num": 1, "num_per_page": 10}}}
-        r = S.post("https://u.y.qq.com/cgi-bin/musicu.fly", json=payload,
+        r = S.post("https://u.y.qq.com/cgi-bin/musicu.fcg", json=payload,
                    headers={"User-Agent": UA, "Referer": "https://y.qq.com/"}, timeout=TIMEOUT)
         j = r.json()
-        return len(((((j.get("req") or {}).get("data") or {}).get("body") or {}).get("song")) or {}).get("list") or []
+        songs = (((j.get("req") or {}).get("data") or {}).get("body") or {}).get("song") or {}
+        return len(songs.get("list") or [])
     count("QQ音乐", qq)
 
     def jamendo():
@@ -535,6 +547,10 @@ WARN_ITEMS = {
     ("搜索", "咪咕"),
     # QQ musicu.fly 搜索 2026-09-13 PC 侧 404(vkey/歌单/播放链路正常,疑似 IP 区域差异),待真机复核
     ("搜索", "QQ音乐"),
+    # 猫耳 getsearch 2026-11-01 被 WAF 412 全面拦截(Referer 齐全仍拦);取流 getsound 不受影响(3/3 可播)。
+    # App v3.9.2 已 searchEnabled=false 退出聚合搜索并下架主题歌单(主题=搜索快照),此失效不影响用户功能
+    ("搜索", "猫耳FM"),
+    ("猫耳FM", "推荐-12主题(=曲目)"),
 }
 
 def main():

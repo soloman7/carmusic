@@ -35,4 +35,9 @@ class DeadTrackLedger(initialPending: Set<String> = emptySet()) {
             Decision.PENDING
         }
     }
+
+    /** force 清理单周期确认删除后的账本对账（v3.9.2）：与 DELETE 同样出账 */
+    fun confirmDeadOnForce(trackId: String) {
+        pending.remove(trackId)
+    }
 }

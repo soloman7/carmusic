@@ -26,6 +26,10 @@ class MaoerSource(private val client: OkHttpClient) : MusicSource {
     override val platform = "maoer"
     override val displayName = "猫耳FM"
 
+    /** v3.9.2:搜索端点 getsearch 被 WAF 412 全面拦截(2026-11-01 实测,Referer 齐全仍拦),
+     *  退出聚合搜索;取流 getsound 不受影响,已收藏的猫耳声音照常播放 */
+    override val searchEnabled = false
+
     /** WAF 校验 Referer：缺失时 getsound 返回 aliyun_waf JS 挑战 HTML 而非 JSON */
     private val headers = mapOf(
         "User-Agent" to CHROME_UA,
@@ -99,29 +103,33 @@ class MaoerSource(private val client: OkHttpClient) : MusicSource {
      * 主题"歌单"：猫耳官方歌单/广播剧 API 已全部 404（2026-08-06 实测 dramaapi/malbum/album
      * 等 10+ 端点均死），唯一存活的是搜索+取流，故用主题关键词搜索快照充当歌单。
      * v3.2.0 新增 6 个主题（2026-08-24 实测：免费结果 23~30/30，取流抽查 2/2 可播）。
+     * v3.9.2:搜索端点被 WAF 412 拦死(searchEnabled=false),主题=搜索快照无源可搜,
+     * 返回空避免用户点进去全报错;WAF 放宽(恢复 searchEnabled)后自动恢复展示。
      */
-    override suspend fun getRecommendedPlaylists(): List<Playlist> = listOf(
-        "热门广播剧" to "广播剧精选",
-        "助眠" to "睡前助眠",
-        "白噪音" to "白噪音",
-        "有声小说" to "有声小说",
-        "情感电台" to "情感电台",
-        "耳语" to "耳边轻语",
-        "悬疑广播剧" to "悬疑剧场",
-        "儿童故事" to "儿童故事",
-        "相声" to "相声茶馆",
-        "睡前故事" to "睡前故事",
-        "历史" to "历史人文",
-        "评书" to "评书连播"
-    ).map { (kw, name) ->
-        Playlist(
-            platform = platform,
-            id = "kw:$kw",
-            name = "猫耳 · $name",
-            trackCount = 30,
-            description = "主题声音集"
-        )
-    }
+    override suspend fun getRecommendedPlaylists(): List<Playlist> =
+        if (!searchEnabled) emptyList()
+        else listOf(
+            "热门广播剧" to "广播剧精选",
+            "助眠" to "睡前助眠",
+            "白噪音" to "白噪音",
+            "有声小说" to "有声小说",
+            "情感电台" to "情感电台",
+            "耳语" to "耳边轻语",
+            "悬疑广播剧" to "悬疑剧场",
+            "儿童故事" to "儿童故事",
+            "相声" to "相声茶馆",
+            "睡前故事" to "睡前故事",
+            "历史" to "历史人文",
+            "评书" to "评书连播"
+        ).map { (kw, name) ->
+            Playlist(
+                platform = platform,
+                id = "kw:$kw",
+                name = "猫耳 · $name",
+                trackCount = 30,
+                description = "主题声音集"
+            )
+        }
 
     /** 主题歌单曲目 = 关键词搜索结果（已验证可 getsound 取流） */
     override suspend fun getPlaylistTracks(playlist: Playlist): List<Track> =

@@ -44,21 +44,24 @@ class NeteaseSource(private val client: OkHttpClient) : MusicSource {
         )
     }
 
-    /** 单曲 JSON → Track（search 与 playlist.tracks 结构一致）；element 求值也在 try 内，非对象元素不抛 */
+    /** 单曲 JSON → Track；兼容两种结构（cloudsearch: ar/al/dt，search/get: artists/album/duration）。
+     *  element 求值也在 try 内，非对象元素不抛 */
     private fun parseTrack(el: JsonElement): Track? = try {
         val song = el.asJsonObject
+        fun artistNames(key: String): String? = song.getAsJsonArray(key)?.let { arr ->
+            (0 until arr.size()).joinToString("/") { i ->
+                arr[i].asJsonObject.get("name").asString
+            }
+        }
         Track(
             platform = platform,
             id = song.get("id").asString,
             title = song.get("name").asString,
-            artist = song.getAsJsonArray("ar")?.let { arr ->
-                (0 until arr.size()).joinToString("/") { i ->
-                    arr[i].asJsonObject.get("name").asString
-                }
-            } ?: "",
-            album = song.getAsJsonObject("al")?.get("name")?.asString ?: "",
+            artist = artistNames("ar") ?: artistNames("artists") ?: "",
+            album = song.getAsJsonObject("al")?.get("name")?.asString
+                ?: song.getAsJsonObject("album")?.get("name")?.asString ?: "",
             coverUrl = song.getAsJsonObject("al")?.get("picUrl")?.asString,
-            duration = song.get("dt")?.asLong?.div(1000) ?: 0
+            duration = (song.get("dt") ?: song.get("duration"))?.asLong?.div(1000) ?: 0
         )
     } catch (e: Exception) {
         null
@@ -66,8 +69,10 @@ class NeteaseSource(private val client: OkHttpClient) : MusicSource {
 
     override suspend fun search(keyword: String, page: Int, limit: Int): List<Track> =
         withContext(Dispatchers.IO) {
+            // v3.9.2:cloudsearch/get/web 匿名收紧(code 50000005 空 result,2026-11-01 实测),
+            // 切回老端点 search/get(实测 10 首;结构 artists/album/duration,parseTrack 已兼容)
             val payload = """{"s":"${keyword.escapeJson()}","type":1,"offset":${(page - 1) * limit},"limit":$limit,"csrf_token":""}"""
-            val json = weapi("/weapi/cloudsearch/get/web", payload)
+            val json = weapi("/weapi/search/get", payload)
             val songs = json.getAsJsonObject("result")?.getAsJsonArray("songs")
                 ?: return@withContext emptyList()
             songs.mapNotNull(::parseTrack)
@@ -99,14 +104,24 @@ class NeteaseSource(private val client: OkHttpClient) : MusicSource {
             } else null
         }
 
-    /** 轻量探测：GET + Range 只看响应码，body 立即关闭（OkHttp 自动跟 302 到 126.net） */
+    /**
+     * 轻量探测：GET + Range 只看可用性，body 立即关闭（OkHttp 自动跟 302 到 126.net）。
+     * v3.9.2 加 Content-Type 校验：外链对下架歌 302 → 163.com/404 返回 **200 + text/html**
+     * （2026-11-01 实测 8/10），只查状态码会把死歌当可播放行 → ExoPlayer 收到 HTML
+     * 播放"成功"但无声。必须音频/M3U8 类型才放行。
+     */
     private fun probePlayable(url: String): Boolean = try {
         val req = Request.Builder()
             .url(url)
             .header("User-Agent", CHROME_UA)
             .header("Range", "bytes=0-0")
             .build()
-        client.newCall(req).execute().use { it.code in 200..299 }
+        client.newCall(req).execute().use { resp ->
+            val ct = resp.header("Content-Type")?.lowercase() ?: ""
+            resp.code in 200..299 &&
+                (ct.startsWith("audio") || ct.contains("mpeg") || ct.contains("octet-stream") ||
+                    ct.contains("ogg") || ct.contains("mpegurl") || ct.contains("aac") || ct.contains("flac"))
+        }
     } catch (e: Exception) {
         false
     }
