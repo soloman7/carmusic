@@ -1,7 +1,7 @@
 {
-  "versionCode": 34,
-  "versionName": "3.9.1",
-  "url": "https://testingcf.jsdelivr.net/gh/soloman7/carmusic@ca2348c6ac5ead7ed0389e388b88949ef38b726a/carmusic-release.apk",
-  "notes": "v3.9.1:修复猫耳FM点播无声(播放流补 Referer/UA);修复推荐歌单滑到底闪退(列表去重+封面降采样);更新包强制 SHA-256 校验;崩溃日志改为系统分享",
-  "sha256": "b48262160a141821263884ee3da34d184158ed7362e94902f3c0d6f734268ddf"
+  "versionCode": 35,
+  "versionName": "3.9.2",
+  "url": "https://testingcf.jsdelivr.net/gh/soloman7/carmusic@68dbaa9b55a4595be2fdaf37e0d11bd06d659a3f/carmusic-release.apk",
+  "notes": "v3.9.2:修复大面积歌曲无法播放/无声(网易接口收紧+外链假活校验);升级后请到设置页点一次「立即清理」移除历史死链;收藏歌曲不受影响,无法播放的歌会自动换源",
+  "sha256": "d3e670c2c5452d4091c70b75cb1489d69669ee27aba80d86f0033d7a61f2e818"
 }
